@@ -1,0 +1,91 @@
+import OpenAI from "openai";
+
+function getOpenAIClient(): OpenAI {
+  const apiKey = process.env.OPENAI_API_KEY || process.env.OPENROUTER_API_KEY;
+  const baseURL = process.env.OPENAI_BASE_URL || undefined;
+  if (!apiKey) {
+    throw new Error(
+      "OPENAI_API_KEY is not set. Please add it to your .env.local file."
+    );
+  }
+  return new OpenAI({ apiKey, baseURL });
+}
+
+export default getOpenAIClient;
+
+export async function transcribeAudio(audioInput: File | Buffer): Promise<string> {
+  const openai = getOpenAIClient();
+
+  // Always materialise into a fresh File from a Buffer to avoid stale
+  // stream / blob issues with the OpenAI SDK on repeated calls.
+  let bytes: Uint8Array;
+  let fileName: string;
+  let mimeType: string;
+
+  if (audioInput instanceof File) {
+    const ab = await audioInput.arrayBuffer();
+    bytes = new Uint8Array(ab);
+    fileName = audioInput.name || "audio.webm";
+    mimeType = audioInput.type || "audio/webm";
+  } else {
+    bytes = new Uint8Array(audioInput);
+    fileName = "audio.webm";
+    mimeType = "audio/webm";
+  }
+
+  const file = new File([bytes as BlobPart], fileName, { type: mimeType });
+
+  const transcription = await openai.audio.transcriptions.create({
+    model: "whisper-1",
+    file,
+    language: "en",
+  });
+  return transcription.text.trim();
+}
+
+export async function synthesizeSpeech(text: string): Promise<Uint8Array> {
+  const openai = getOpenAIClient();
+  const response = await openai.audio.speech.create({
+    model: "tts-1",
+    voice: "nova",
+    input: text,
+    response_format: "mp3",
+  });
+  const arrayBuffer = await response.arrayBuffer();
+  return new Uint8Array(arrayBuffer);
+}
+
+export async function generateEmbedding(text: string): Promise<number[]> {
+  const openai = getOpenAIClient();
+  const response = await openai.embeddings.create({
+    model: "text-embedding-3-small",
+    input: text,
+  });
+  return response.data[0].embedding;
+}
+
+/**
+ * Batch-generate embeddings for multiple texts.
+ * Splits into batches of BATCH_SIZE to respect API limits.
+ * Returns an array of embeddings in the same order as the input texts.
+ */
+export async function generateEmbeddings(texts: string[]): Promise<number[][]> {
+  if (texts.length === 0) return [];
+
+  const openai = getOpenAIClient();
+  const BATCH_SIZE = 50;
+  const allEmbeddings: number[][] = [];
+
+  for (let i = 0; i < texts.length; i += BATCH_SIZE) {
+    const batch = texts.slice(i, i + BATCH_SIZE);
+    const response = await openai.embeddings.create({
+      model: "text-embedding-3-small",
+      input: batch,
+    });
+    // OpenAI returns embeddings in order of input index
+    const sorted = [...response.data].sort((a, b) => a.index - b.index);
+    allEmbeddings.push(...sorted.map((d) => d.embedding));
+  }
+
+  return allEmbeddings;
+}
