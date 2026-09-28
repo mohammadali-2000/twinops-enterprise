@@ -1,0 +1,71 @@
+name: TwinOps Enterprise CI
+
+on:
+  push:
+    branches: [main, "feature/**", "fix/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality-and-security:
+    name: Code Quality, Tests & Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install Dependencies
+        run: npm ci || npm install --legacy-peer-deps
+
+      - name: Verify No Leaked Secrets
+        run: |
+          echo "Running DLP & Secret Scan..."
+          if grep -rnE '(sk-[a-zA-Z0-9]{32,}|xoxb-[a-zA-Z0-9]{10,}|ghp_[a-zA-Z0-9]{36})' . \
+            --exclude-dir={.git,.next,node_modules,coverage} --exclude={.env.example,*.log}; then
+            echo "::error::Found potential hardcoded secret or API token!"
+            exit 1
+          else
+            echo "Zero secrets found. Security audit passed."
+          fi
+
+      - name: ESLint Code Quality
+        run: npm run lint
+
+      - name: Automated Unit & Integration Tests
+        run: npm test
+
+      - name: TypeScript Typecheck
+        run: npx tsc --noEmit
+
+  build-verification:
+    name: Production Build Verification
+    needs: quality-and-security
+    runs-on: ubuntu-latest
+    env:
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      NEXT_PUBLIC_SUPABASE_URL: https://dummy-ci.supabase.co
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-dummy-anon-key
+      SUPABASE_SERVICE_ROLE_KEY: ci-dummy-service-role-key
+      OPENAI_API_KEY: ci-dummy-openai-key
+      TEAMS_WEBHOOK_URL: https://prod-dummy.eastus.logic.azure.com:443/workflows/dummy
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install Dependencies
+        run: npm ci || npm install --legacy-peer-deps
+
+      - name: Next.js Production Build
+        run: npm run build
