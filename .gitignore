@@ -1,0 +1,47 @@
+# Dependencies
+node_modules
+/.pnp
+.pnp.js
+
+# Testing and Coverage
+/coverage
+
+# Next.js Build Outputs
+/.next/
+/out/
+/build/
+next-env.d.ts
+*.tsbuildinfo
+
+# OS and Editor
+.DS_Store
+*.pem
+*.key
+*.cert
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea
+
+# Environment Variables and Secrets
+.env
+.env*.local
+.env.development
+.env.test
+.env.production
+!.env.example
+
+# Supabase Temporary Artifacts
+supabase/.temp
+
+# Local Ephemeral Storage
+data/*.json
+!data/.gitkeep
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
