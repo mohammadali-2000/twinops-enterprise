@@ -15,6 +15,8 @@ const DOC_TYPE_TO_MEMORY_TYPE: Record<string, "episodic" | "semantic"> = {
   google_drive_file: "semantic",
   notion_page: "semantic",
   document: "semantic",
+  github: "semantic",
+  jira: "semantic",
 };
 
 const DOC_TYPE_TO_TEAM: Record<string, string> = {
@@ -24,6 +26,8 @@ const DOC_TYPE_TO_TEAM: Record<string, string> = {
   google_drive_file: "Google Drive",
   notion_page: "Notion",
   document: "Documents",
+  github: "GitHub",
+  jira: "Jira",
 };
 
 function extractTags(doc: { doc_type: string; title: string; content: string | null }): string[] {
@@ -55,7 +59,8 @@ const EVENT_TYPE_TO_TEAM: Record<string, string> = {
 export async function GET(request: NextRequest) {
   try {
     const url = request.nextUrl;
-    const query = url.searchParams.get("q") || "";
+    // Strip characters that would break PostgREST's or() filter syntax.
+    const query = (url.searchParams.get("q") || "").replace(/[^\p{L}\p{N}\s_-]/gu, "").trim().slice(0, 100);
     const typeFilter = url.searchParams.get("type") || "all";
 
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -79,7 +84,7 @@ export async function GET(request: NextRequest) {
     if (typeFilter === "episodic") {
       dbQuery = dbQuery.in("source", ["email", "slack"]);
     } else if (typeFilter === "semantic") {
-      dbQuery = dbQuery.in("source", ["gdrive", "notion", "github", "manual"]);
+      dbQuery = dbQuery.in("source", ["gdrive", "notion", "github", "jira", "manual"]);
     } else if (typeFilter !== "all") {
       dbQuery = dbQuery.eq("metadata->>doc_type", typeFilter);
     }
@@ -116,9 +121,10 @@ export async function GET(request: NextRequest) {
     // Map documents to MemoryItem shape
     const docItems = (docResult.data ?? []).map((row) => {
       const meta = (row.metadata || {}) as Record<string, unknown>;
-      const docType = (meta.doc_type as string) || row.source;
+      const docType =
+        row.source === "github" || row.source === "jira" ? row.source : (meta.doc_type as string) || row.source;
       const title = (meta.title as string) || "Untitled";
-      const fileUrl = meta.file_url as string | undefined;
+      const fileUrl = (meta.file_url as string | undefined) || (meta.url as string | undefined);
       return {
         id: row.id,
         type: DOC_TYPE_TO_MEMORY_TYPE[docType] || "semantic" as "episodic" | "semantic",

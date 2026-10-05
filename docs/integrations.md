@@ -22,9 +22,49 @@ This document details the configuration, implementation status, and data flow of
 Office 365 connector webhooks were retired by Microsoft in 2024-2025. TwinOps utilizes modern Power Automate / Workflows Incoming Webhooks compliant with the Adaptive Cards v1.4 schema.
 
 ### Configuration
-Set the following environment variable:
 ```env
+# Outgoing cards only (Teams channel -> ... -> Workflows -> "Post to a channel when a webhook request is received")
 TEAMS_WEBHOOK_URL=https://prod-xx.eastus.logic.azure.com:443/workflows/.../triggers/manual/paths/invoke?api-version=2016-06-01
+# Inbound questions from the Power Automate flow below
+TEAMS_FLOW_SECRET=<random 64-char hex>
+```
+
+### Inbound: ask the twin from a Teams channel (Power Automate)
+The flow posts the question to TwinOps, waits for the answer, and replies in the same thread.
+The HTTP action is a **Premium** connector (a Power Automate Premium or trial license is needed).
+
+1. **Expose the app publicly.** For local testing run `npm run dev`, then `ngrok http 3000`
+   (or VS Code "Ports" -> forward 3000 -> visibility Public). Note the `https://...` URL.
+2. **Create the flow** at make.powerautomate.com -> Create -> Automated cloud flow.
+   - Trigger: **Microsoft Teams - When keywords are mentioned**. Message type: Channel. Pick your team and channel. Keywords: `twin:`
+3. **Add action: Microsoft Teams - Get message details.** Message: the trigger's *Message ID*. Message type: Channel. Same team/channel.
+4. **Add action: HTTP** (Premium).
+   - Method `POST`, URI `https://<public-url>/api/teams/events`
+   - Headers: `Content-Type: application/json`, `x-twinops-secret: <TEAMS_FLOW_SECRET>`
+   - Body:
+     ```json
+     {
+       "question": "@{body('Get_message_details')?['body']?['content']}",
+       "sender": "@{body('Get_message_details')?['from']?['user']?['displayName']}",
+       "channel": "teams"
+     }
+     ```
+     Add `"cloneId": "<uuid>"` to target a specific clone; otherwise the oldest clone answers.
+5. **Add action: Parse JSON.** Content: the HTTP *Body*. Schema:
+   ```json
+   { "type": "object", "properties": { "answer": { "type": "string" }, "answerHtml": { "type": "string" } } }
+   ```
+6. **Add action: Microsoft Teams - Reply with a message in a channel.** Post as: Flow bot. Message: the trigger's *Message ID*. Body: `answerHtml`.
+7. Save, then post `twin: what is the status of KAN-1?` in the channel. The reply arrives in roughly 5-20 seconds.
+
+The reply never contains `twin:`, so the flow cannot re-trigger itself. Without the correct
+`x-twinops-secret` header the endpoint returns `401`.
+
+Test the endpoint without Teams:
+```bash
+curl -X POST http://localhost:3000/api/teams/events \
+  -H "Content-Type: application/json" -H "x-twinops-secret: $TEAMS_FLOW_SECRET" \
+  -d '{"question":"twin: what changed in my repos recently?","sender":"Test"}'
 ```
 
 ### Dispatch Format
@@ -44,7 +84,7 @@ The GitHub connector uses `@octokit/rest` to interface with GitHub Cloud or GitH
 ### Configuration
 Set the following environment variable:
 ```env
-GITHUB_ACCESS_TOKEN=ghp_yourEnterpriseOrPersonalToken
+GITHUB_TOKEN=ghp_yourEnterpriseOrPersonalToken
 ```
 
 ### Sync Pipeline (`app/api/github/sync/route.ts`)
@@ -68,8 +108,9 @@ JIRA_API_TOKEN=your_jira_api_token
 ```
 
 ### Functionality (`lib/integrations/jira.ts`)
-- `fetchJiraIssues(jql)`: Queries issues by project key or custom JQL filters.
-- Maps Jira issue summaries, descriptions, and assignees into memory embeddings for twin grounding.
+- `POST /api/jira/sync` with optional `{ "cloneId", "jql", "maxResults" }` (default JQL: issues updated in the last 30 days).
+- Each issue (summary, status, assignee, ADF description, last 5 comments) becomes one `document` row plus embedded `chunk` rows, with `issue_key` and `url` in metadata.
+- Re-syncing replaces rows for the same issue keys instead of duplicating them.
 
 ---
 

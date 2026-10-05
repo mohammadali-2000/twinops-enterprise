@@ -4,10 +4,12 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:node22": "npx -y -p node@22 node node_modules/next/dist/bin/next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "tsx --test tests/*.test.mjs"
+    "test": "node scripts/run-tests.mjs",
+    "e2e": "node scripts/e2e.mjs"
   },
   "dependencies": {
     "@notionhq/client": "^5.9.0",

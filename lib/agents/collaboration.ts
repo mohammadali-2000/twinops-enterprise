@@ -3,7 +3,7 @@ import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import { buildSystemPrompt } from "./clone-brain";
 import { getCloneRuntime, listClonesForApi } from "@backend/memory/clone-repository";
 import { getKnowledgeContext } from "@backend/memory";
-import getOpenAIClient from "./openai";
+import getOpenAIClient, { getChatModel } from "./openai";
 
 const MAX_HOPS = 2;
 const MAX_CONSULTS_PER_QUESTION = 3;
@@ -227,55 +227,43 @@ async function generateConsultationResponse(
   clone: Clone,
   query: string
 ): Promise<string> {
-  // 1. Load the target clone's runtime and knowledge context
   const runtime = await getCloneRuntime(clone.id);
   const knowledge = await getKnowledgeContext(clone.id, query, 5);
 
-  // 2. Build a full system prompt for the target clone (same quality as primary)
-  const systemPrompt = buildSystemPrompt(
-    clone,
-    knowledge
-      ? {
-          owner: runtime.owner,
-          memories: knowledge.items
-            .slice(0, 8)
-            .map(
-              (item) =>
-                `- ${item.fact} (confidence: ${item.confidence.toFixed(2)}, source: ${item.source_type})`
-            ),
-          slackMessages: knowledge.resources
-            .filter((r) => r.source_type === "slack")
-            .slice(0, 5)
-            .map((r) => `[slack] ${r.title || "message"}: ${r.content}`),
-          categorySummaries: knowledge.categories.map(
-            (cat) =>
-              `- ${cat.category_key}: ${cat.summary} (confidence: ${cat.confidence.toFixed(2)})`
-          ),
-          itemFacts: knowledge.items.slice(0, 8).map((item) => `- ${item.fact}`),
-          resourceHighlights: knowledge.resources
-            .filter((r) => r.source_type !== "slack")
-            .slice(0, 4)
-            .map((r) => `- [${r.source_type}] ${r.title || "resource"}: ${r.content}`),
-        }
-      : { owner: runtime.owner }
-  );
+  const chunks = knowledge?.chunks.slice(0, 6) ?? [];
+  const facts = knowledge?.items.slice(0, 8) ?? [];
+  if (chunks.length === 0 && facts.length === 0) {
+    return `${clone.name}'s twin has no synced knowledge about this yet.`;
+  }
+
+  const systemPrompt = buildSystemPrompt(clone, {
+    owner: runtime.owner,
+    retrievedSources: chunks.map((chunk, i) => {
+      const meta = chunk.metadata ?? {};
+      const title = (meta.document_title as string) || (meta.title as string) || "source";
+      return `[${i + 1}] (${(meta.source as string) || "document"}) ${title}
+${chunk.content}`;
+    }),
+    memories: facts.map((item) => `- ${item.fact} (source: ${item.source_type})`),
+  });
 
   // 3. Call OpenAI with the target clone's persona and context
   const openai = getOpenAIClient();
 
   const completion = await openai.chat.completions.create({
-    model: "gpt-4o",
+    model: getChatModel(),
     messages: [
       { role: "system", content: systemPrompt },
       {
         role: "user",
         content:
           `A colleague's AI clone is asking you the following question on behalf of their owner. ` +
-          `Answer concisely and specifically based on your knowledge. If you don't know, say so.\n\n` +
+          `Answer concisely using only the knowledge above, and name the sources you used (ticket keys, repo names). ` +
+          `If the knowledge above doesn't cover it, say you don't know.\n\n` +
           `Question: ${query}`,
       },
     ],
-    temperature: 0.6,
+    temperature: 0.3,
     max_tokens: 800,
   });
 

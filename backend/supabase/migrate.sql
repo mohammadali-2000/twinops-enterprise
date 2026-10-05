@@ -86,7 +86,7 @@ CREATE INDEX idx_memories_clone_id ON memories(clone_id);
 CREATE INDEX idx_memories_type ON memories(clone_id, type);
 CREATE INDEX idx_memories_source ON memories(clone_id, source);
 CREATE INDEX idx_memories_occurred_at ON memories(occurred_at DESC);
-CREATE INDEX idx_memories_embedding ON memories USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+CREATE INDEX idx_memories_embedding ON memories USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX idx_messages_clone_id ON messages(clone_id);
 CREATE INDEX idx_messages_conversation ON messages(conversation_id);
 CREATE INDEX idx_integrations_provider ON integrations(provider);

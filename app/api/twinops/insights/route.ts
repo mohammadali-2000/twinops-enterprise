@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/core/supabase/server";
-import { generateEmbedding } from "@/lib/agents/openai";
-import OpenAI from "openai";
+import getOpenAIClient, { getChatModel } from "@/lib/agents/openai";
+import { getKnowledgeContext } from "@backend/memory";
+import type OpenAI from "openai";
 
 /**
  * POST /api/twinops/insights
@@ -26,7 +27,7 @@ interface StanceResult {
   confidence: number;
   summary: string;
   reasoning: string;
-  citations: { source: string; snippet: string; date: string }[];
+  citations: { source: string; snippet: string; date: string; url?: string }[];
 }
 
 interface ThemeResult {
@@ -46,184 +47,92 @@ function getInitials(name: string): string {
     .slice(0, 2);
 }
 
-/**
- * Retrieve relevant context (chunks + facts) for a given clone and question.
- * Same retrieval strategy as /api/twinops/chat.
- */
+type Citation = { source: string; snippet: string; date: string; url?: string };
+
+/** Retrieve this clone's real synced knowledge for the question, with matching citations. */
 async function getCloneContext(
-  supabase: ReturnType<typeof createServerSupabaseClient>,
   cloneId: string,
-  question: string,
-  queryEmbedding: number[]
-): Promise<string> {
-  let chunks: { content: string; metadata: Record<string, unknown> }[] = [];
+  question: string
+): Promise<{ context: string; citations: Citation[] }> {
+  const knowledge = await getKnowledgeContext(cloneId, question, 5);
+  const chunks = knowledge?.chunks.slice(0, 6) ?? [];
+  const facts = knowledge?.items.slice(0, 5) ?? [];
 
-  // Attempt 1: Semantic vector search
-  try {
-    const { data: vectorResults } = await supabase.rpc("match_memories", {
-      query_embedding: JSON.stringify(queryEmbedding),
-      match_threshold: 0.4,
-      match_count: 5,
-      p_clone_id: cloneId,
-      p_type: "chunk",
-    });
-    if (vectorResults && vectorResults.length > 0) {
-      chunks = vectorResults as typeof chunks;
-    }
-  } catch {
-    // Vector search unavailable
-  }
+  const citations: Citation[] = chunks.map((c) => {
+    const meta = c.metadata ?? {};
+    return {
+      source: (meta.source as string) || "document",
+      snippet: (meta.document_title as string) || (meta.title as string) || c.content.slice(0, 80),
+      date: (meta.updated as string) || c.created_at || "",
+      url: (meta.url as string) || undefined,
+    };
+  });
 
-  // Attempt 2: Keyword search fallback
-  if (chunks.length === 0) {
-    const searchTerms = question
-      .toLowerCase()
-      .split(/\s+/)
-      .filter((w) => w.length > 3)
-      .slice(0, 3);
-
-    if (searchTerms.length > 0) {
-      const orFilter = searchTerms
-        .map((t) => `content.ilike.%${t}%`)
-        .join(",");
-      const { data: chunkData } = await supabase
-        .from("memories")
-        .select("content, metadata")
-        .eq("clone_id", cloneId)
-        .eq("type", "chunk")
-        .or(orFilter)
-        .limit(5);
-      chunks = (chunkData ?? []) as typeof chunks;
-    }
-  }
-
-  // Attempt 3: Most recent chunks for this clone
-  if (chunks.length === 0) {
-    const { data: recentChunks } = await supabase
-      .from("memories")
-      .select("content, metadata")
-      .eq("clone_id", cloneId)
-      .eq("type", "chunk")
-      .order("created_at", { ascending: false })
-      .limit(4);
-    chunks = (recentChunks ?? []) as typeof chunks;
-  }
-
-  // Also fetch facts
-  let facts: { content: string }[] = [];
-  try {
-    const { data: factResults } = await supabase.rpc("match_memories", {
-      query_embedding: JSON.stringify(queryEmbedding),
-      match_threshold: 0.4,
-      match_count: 3,
-      p_clone_id: cloneId,
-      p_type: "fact",
-    });
-    if (factResults && factResults.length > 0) {
-      facts = factResults as typeof facts;
-    }
-  } catch {
-    // Fact search unavailable
-  }
-
-  const contextParts: string[] = [];
-
-  if (chunks.length > 0) {
-    contextParts.push(
-      chunks
-        .map((c, i) => {
-          const source = (c.metadata?.source as string) || "document";
-          const title =
-            (c.metadata?.document_title as string) ||
-            (c.metadata?.title as string) ||
-            "";
-          return `[Source ${i + 1}: ${source}${title ? ` — ${title}` : ""}]\n${c.content}`;
-        })
-        .join("\n---\n")
-    );
-  }
-
-  if (facts.length > 0) {
-    contextParts.push(
-      "Key Facts:\n" + facts.map((f) => `- ${f.content}`).join("\n")
-    );
-  }
-
-  return contextParts.join("\n\n") || "(No relevant context found.)";
+  const parts = chunks.map((c, i) => `[${i + 1}] (${citations[i].source}) ${citations[i].snippet}\n${c.content}`);
+  if (facts.length > 0) parts.push("Key facts:\n" + facts.map((f) => `- ${f.fact}`).join("\n"));
+  return { context: parts.join("\n---\n"), citations };
 }
 
-/**
- * Ask OpenAI to generate a stance for a single clone given the question and context.
- */
+/** Ask the model for this clone's stance, grounded only in its retrieved sources. */
 async function generateCloneStance(
   openai: OpenAI,
   cloneName: string,
   role: string,
   department: string,
-  personality: Record<string, unknown> | null,
   expertise: string[],
   context: string,
+  citations: Citation[],
   question: string
 ): Promise<StanceResult> {
-  const prompt = `You are simulating the perspective of ${cloneName}, who works as ${role} in the ${department} department.
-Their expertise includes: ${expertise.join(", ") || "general organizational knowledge"}.
-Personality/tone: ${(personality?.tone as string) || "professional"}.
-Bio: ${(personality?.bio as string) || `Team member at the organization`}.
+  if (!context) {
+    return {
+      stance: "neutral",
+      confidence: 0,
+      summary: `${cloneName}'s twin has no synced GitHub or Jira knowledge about this.`,
+      reasoning: "No relevant sources were found in this twin's memory, so no position is given.",
+      citations: [],
+    };
+  }
 
-Here is relevant context from their knowledge base (emails, docs, Slack, meetings):
+  const prompt = `You represent ${cloneName}, ${role} in ${department}. Expertise: ${expertise.join(", ") || "not specified"}.
+
+Numbered sources from ${cloneName}'s real work (GitHub repos, Jira tickets):
 ${context}
 
-Based on this person's role, expertise, knowledge, and perspective, evaluate the following management question:
-"${question}"
+Question from leadership: "${question}"
 
-Respond with a JSON object (no markdown, just raw JSON) with these fields:
+Answer only from the sources above. Respond with raw JSON:
 {
   "stance": "support" | "neutral" | "oppose",
-  "confidence": <number between 0.5 and 0.95>,
-  "summary": "<1-2 sentence summary of their position>",
-  "reasoning": "<2-3 sentences explaining why they hold this position, referencing their role and any relevant context>",
-  "citations": [
-    { "source": "<source type, e.g. Slack, Email, Meeting Notes>", "snippet": "<brief relevant quote or reference>", "date": "<approximate date if available, otherwise empty string>" }
-  ]
+  "confidence": <0 to 1: how well the sources support this position>,
+  "summary": "<1-2 sentences>",
+  "reasoning": "<2-3 sentences that refer to specific tickets, repos, or commits>",
+  "source_ids": [<numbers of the sources you relied on>]
 }
-
-Guidelines:
-- The stance should authentically reflect what someone in this role/department would likely think.
-- Confidence should reflect how strongly they'd feel (higher for topics directly in their domain).
-- Citations should reference actual context when available; if no relevant context exists, provide 1 plausible citation based on what someone in this role would reference.
-- Keep the summary concise and the reasoning substantive.`;
+If the sources don't address the question, use stance "neutral", a low confidence, and say so.`;
 
   const response = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
+    model: getChatModel(),
     messages: [{ role: "user", content: prompt }],
-    temperature: 0.7,
+    temperature: 0.3,
     max_tokens: 500,
     response_format: { type: "json_object" },
   });
 
-  const content = response.choices[0]?.message?.content ?? "{}";
-  try {
-    const parsed = JSON.parse(content) as StanceResult;
-    // Validate and clamp
-    if (!["support", "neutral", "oppose"].includes(parsed.stance)) {
-      parsed.stance = "neutral";
-    }
-    parsed.confidence = Math.max(0.5, Math.min(0.95, parsed.confidence || 0.7));
-    parsed.summary = parsed.summary || "No summary available.";
-    parsed.reasoning = parsed.reasoning || "No detailed reasoning available.";
-    parsed.citations = Array.isArray(parsed.citations)
-      ? parsed.citations.slice(0, 3)
-      : [];
-    return parsed;
-  } catch {
-    return {
-      stance: "neutral",
-      confidence: 0.6,
-      summary: "Unable to determine a clear position on this question.",
-      reasoning: `As ${role} in ${department}, ${cloneName} would need more context to form a strong opinion on this topic.`,
-      citations: [],
-    };
-  }
+  const parsed = JSON.parse(response.choices[0]?.message?.content ?? "{}") as Partial<StanceResult> & {
+    source_ids?: unknown;
+  };
+  const ids = Array.isArray(parsed.source_ids) ? parsed.source_ids : [];
+  return {
+    stance: parsed.stance && ["support", "neutral", "oppose"].includes(parsed.stance) ? parsed.stance : "neutral",
+    confidence: Math.max(0, Math.min(1, Number(parsed.confidence) || 0)),
+    summary: parsed.summary || "",
+    reasoning: parsed.reasoning || "",
+    citations: ids
+      .map((n) => citations[Number(n) - 1])
+      .filter((c): c is Citation => Boolean(c))
+      .slice(0, 3),
+  };
 }
 
 /**
@@ -266,9 +175,9 @@ Guidelines:
 - Order themes by number of employees (most first).`;
 
   const response = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
+    model: getChatModel(),
     messages: [{ role: "user", content: prompt }],
-    temperature: 0.5,
+    temperature: 0.3,
     max_tokens: 800,
     response_format: { type: "json_object" },
   });
@@ -306,121 +215,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const apiKey = process.env.OPENAI_API_KEY;
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-    if (!apiKey || !supabaseUrl || !supabaseKey) {
-      const encoder = new TextEncoder();
-      const readable = new ReadableStream({
-        async start(controller) {
-          const emit = (data: Record<string, unknown>) => {
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
-          };
-
-          emit({ type: "stage", stage: "planning", message: "Analyzing question and identifying relevant employees…" });
-          emit({
-            type: "plan",
-            plan: {
-              question,
-              targetTeams: ["Engineering", "Sales", "Product"],
-              estimatedResponses: 3,
-              availableTeams: ["Engineering", "Sales", "Product"],
-              steps: [
-                "Identified 3 employee clones across 3 teams",
-                "Querying each clone's knowledge base for relevant context",
-                "Generating stance assessment for each employee",
-                "Aggregating responses and identifying themes",
-              ],
-            },
-          });
-
-          await new Promise((r) => setTimeout(r, 600));
-          emit({ type: "stage", stage: "querying", message: "Querying 3 employee digital twins…" });
-
-          // Clone 1: Jason Park
-          await new Promise((r) => setTimeout(r, 500));
-          emit({
-            type: "response",
-            response: {
-              employee: { id: "clone_jason", name: "Jason Park", role: "Engineering Lead", team: "Engineering", tenure: "2 years", initials: "JP" },
-              stance: "support",
-              confidence: 0.95,
-              summary: "v3 platform rewrite is progressing well for March 15, with SSO passing tests. However, 2 open platform positions create risk for Phase 2 audit logs.",
-              reasoning: "Engineering context from RFC shows phased rollout is on schedule, but team capacity is near maximum.",
-              citations: [{ source: "Slack (#eng-platform)", snippet: "v3 platform rewrite on track for March 15 deadline", date: "Jan 22" }],
-            },
-          });
-
-          // Clone 2: Sarah Chen
-          await new Promise((r) => setTimeout(r, 600));
-          emit({
-            type: "response",
-            response: {
-              employee: { id: "clone_sarah", name: "Sarah Chen", role: "VP of Sales", team: "Sales", tenure: "2 years", initials: "SC" },
-              stance: "support",
-              confidence: 0.9,
-              summary: "Enterprise pipeline is at $8.7M. TechFlow ($3.2M ARR) urgently requires SSO and audit logging for security review starting March 5.",
-              reasoning: "Revenue alignment is high; delivery before early March is critical to closing Q1 pipeline.",
-              citations: [{ source: "Gmail", snippet: "TechFlow Inc is the largest deal in Q1 pipeline at $3.2M ARR", date: "Jan 20" }],
-            },
-          });
-
-          // Clone 3: Rachel Hayes
-          await new Promise((r) => setTimeout(r, 500));
-          emit({
-            type: "response",
-            response: {
-              employee: { id: "clone_self", name: "Rachel Hayes", role: "VP of Product", team: "Product", tenure: "2 years", initials: "RH" },
-              stance: "support",
-              confidence: 0.92,
-              summary: "Product roadmap prioritizes enterprise features (SSO, audit logs) as P1 to directly unlock the $8.7M pipeline.",
-              reasoning: "Agreed on simplified event stream for Phase 2 to meet sales deadlines without risking platform stability.",
-              citations: [{ source: "Notion", snippet: "Enterprise features are Priority 1 for Q1", date: "Jan 10" }],
-            },
-          });
-
-          await new Promise((r) => setTimeout(r, 600));
-          emit({ type: "stage", stage: "aggregating", message: "Synthesizing cross-team alignment and identifying strategic themes…" });
-
-          await new Promise((r) => setTimeout(r, 700));
-          emit({
-            type: "themes",
-            themes: [
-              {
-                id: "theme_1",
-                label: "Enterprise Security Alignment",
-                dominantStance: "support",
-                description: "Unanimous alignment across Sales, Product, and Eng that SSO and audit logs are top priorities.",
-                employeeIds: ["clone_jason", "clone_sarah", "clone_self"],
-              },
-              {
-                id: "theme_2",
-                label: "Engineering Bandwidth Risk",
-                dominantStance: "neutral",
-                description: "Two open engineering positions may bottleneck Phase 2 deliverables if hiring delays continue.",
-                employeeIds: ["clone_jason"],
-              },
-            ],
-            summary: "All three department leads strongly support the current direction, but the CEO should prioritize accelerating engineering hiring to protect the March 15 timeline.",
-          });
-
-          emit({ type: "stage", stage: "complete", message: "Analysis complete across all teams." });
-          controller.close();
-        },
-      });
-
-      return new Response(readable, {
-        headers: {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          Connection: "keep-alive",
-        },
-      });
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
     }
 
     const supabase = createServerSupabaseClient();
-    const openai = new OpenAI({ apiKey });
+    const openai = getOpenAIClient();
 
     // Fetch all clones
     let query = supabase
@@ -428,6 +228,7 @@ export async function POST(request: NextRequest) {
       .select(
         "id, name, personality, expertise_tags, owner_role, owner_department"
       )
+      .eq("status", "active")
       .order("created_at", { ascending: true });
 
     // Filter by teams/departments if specified
@@ -444,18 +245,9 @@ export async function POST(request: NextRequest) {
 
     if (!clones || clones.length === 0) {
       return NextResponse.json(
-        { error: "No clones found in database" },
+        { error: "No active twins yet. Create twins in Settings first." },
         { status: 404 }
       );
-    }
-
-    // Pre-compute query embedding once (shared across all clones)
-    let queryEmbedding: number[];
-    try {
-      queryEmbedding = await generateEmbedding(question);
-    } catch {
-      // If embedding fails, we can still proceed with keyword search
-      queryEmbedding = [];
     }
 
     // Determine available teams from actual clone data
@@ -520,6 +312,7 @@ export async function POST(request: NextRequest) {
             name: string;
             stance: string;
             summary: string;
+            confidence: number;
           }[] = [];
 
           // Process clones in parallel batches of 3 to avoid rate limits
@@ -534,12 +327,7 @@ export async function POST(request: NextRequest) {
                 const expertise = clone.expertise_tags ?? [];
 
                 // Retrieve context for this clone
-                const context = await getCloneContext(
-                  supabase,
-                  clone.id,
-                  question,
-                  queryEmbedding
-                );
+                const { context, citations } = await getCloneContext(clone.id, question);
 
                 // Generate stance via LLM
                 const stanceResult = await generateCloneStance(
@@ -547,9 +335,9 @@ export async function POST(request: NextRequest) {
                   displayName,
                   role,
                   department,
-                  clone.personality,
                   expertise,
                   context,
+                  citations,
                   question
                 );
 
@@ -575,6 +363,7 @@ export async function POST(request: NextRequest) {
                 name: result.employee.name,
                 stance: result.stance,
                 summary: result.summary,
+                confidence: result.confidence,
               });
             }
           }
@@ -622,7 +411,8 @@ export async function POST(request: NextRequest) {
                 neutral: total > 0 ? Math.round((neutralCount / total) * 100) : 0,
                 oppose: total > 0 ? Math.round((opposeCount / total) * 100) : 0,
               },
-              overallConfidence: 0.78,
+              overallConfidence:
+                total > 0 ? allResponses.reduce((sum, r) => sum + r.confidence, 0) / total : 0,
               themes: themesWithCounts,
               totalResponses: total,
               availableTeams,

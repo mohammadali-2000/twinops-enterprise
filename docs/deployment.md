@@ -114,7 +114,7 @@ Before traffic routing is enabled, verify all required environment variables:
 | `SUPABASE_SERVICE_ROLE_KEY` | Secret / Critical | Secure Vault injection; bypasses RLS |
 | `OPENAI_API_KEY` | Secret / Critical | Validated via `/api/health` connectivity |
 | `TEAMS_WEBHOOK_URL` | Secret / Confidential | HTTPS endpoint on `office.com` or Azure |
-| `GITHUB_ACCESS_TOKEN` | Secret / Confidential | Scoped GitHub Personal Access Token |
+| `GITHUB_TOKEN` | Secret / Confidential | Scoped GitHub Personal Access Token |
 | `JIRA_API_TOKEN` | Secret / Confidential | Base64 encoded auth string |
 
 ---

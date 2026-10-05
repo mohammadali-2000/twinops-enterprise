@@ -36,8 +36,13 @@ export async function* streamInsightsQuery(
   });
 
   if (!res.ok || !res.body) {
-    yield { type: "stage", stage: "complete", message: "Analysis failed. Check backend connection." };
-    return;
+    let message = "Analysis failed. Check the server logs.";
+    try {
+      message = (await res.json()).error || message;
+    } catch {
+      // non-JSON error body
+    }
+    throw new Error(message);
   }
 
   const reader = res.body.getReader();
@@ -54,8 +59,13 @@ export async function* streamInsightsQuery(
 
     for (const line of lines) {
       if (!line.startsWith("data: ")) continue;
+      let event;
       try {
-        const event = JSON.parse(line.slice(6));
+        event = JSON.parse(line.slice(6));
+      } catch {
+        continue;
+      }
+      {
         if (event.type === "stage") {
           yield { type: "stage", stage: event.stage, message: event.message };
         } else if (event.type === "plan") {
@@ -72,10 +82,6 @@ export async function* streamInsightsQuery(
           yield { type: "aggregation", data: event.data };
         } else if (event.type === "error") {
           throw new Error(event.message);
-        }
-      } catch (parseErr) {
-        if (parseErr instanceof Error && parseErr.message) {
-          throw parseErr;
         }
       }
     }

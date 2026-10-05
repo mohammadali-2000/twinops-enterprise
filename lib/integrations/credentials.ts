@@ -213,9 +213,11 @@ export interface JiraCredentials {
 /** Resolve Jira Cloud credentials from Settings first, then environment. */
 export async function getJiraCredentials(): Promise<JiraCredentials> {
   const config = await getIntegrationConfig("jira");
-  const baseUrl = typeof config?.base_url === "string" ? config.base_url : process.env.JIRA_BASE_URL;
-  const email = typeof config?.email === "string" ? config.email : process.env.JIRA_EMAIL;
-  const apiToken = typeof config?.api_token === "string" ? config.api_token : process.env.JIRA_API_TOKEN;
+  const pick = (value: unknown, fallback?: string) =>
+    (typeof value === "string" && value.trim()) || fallback?.trim() || "";
+  const baseUrl = pick(config?.base_url, process.env.JIRA_BASE_URL);
+  const email = pick(config?.email, process.env.JIRA_EMAIL);
+  const apiToken = pick(config?.api_token, process.env.JIRA_API_TOKEN);
 
   if (!baseUrl || !email || !apiToken) {
     throw new Error("Jira is not configured. Add base URL, email, and API token in Settings or set JIRA_BASE_URL, JIRA_EMAIL, and JIRA_API_TOKEN.");
@@ -229,58 +231,21 @@ export async function getJiraCredentials(): Promise<JiraCredentials> {
   return { baseUrl: url.origin, email: email.trim(), apiToken: apiToken.trim() };
 }
 
+/** The oldest active clone. Used when a request doesn't name a clone. */
 export async function getActiveCloneId(): Promise<string> {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!supabaseUrl || !supabaseKey) {
-    return "clone_self";
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    throw new Error("Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.");
   }
 
-  try {
-    const supabase = createServerSupabaseClient();
+  const { data, error } = await createServerSupabaseClient()
+    .from("clones")
+    .select("id")
+    .eq("status", "active")
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
 
-    // Try active clones first
-    const active = await supabase
-      .from("clones")
-      .select("id")
-      .eq("status", "active")
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .single();
-
-    if (active.data?.id) {
-      return active.data.id as string;
-    }
-
-    // Fall back to any clone regardless of status
-    const anyClone = await supabase
-      .from("clones")
-      .select("id")
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .single();
-
-    if (anyClone.data?.id) {
-      return anyClone.data.id as string;
-    }
-
-    // No clones at all — auto-seed a default clone (no org/user FK needed)
-    console.log("[getActiveCloneId] No clones found, auto-seeding default clone...");
-
-    const { data: clone } = await supabase
-      .from("clones")
-      .insert({ name: "Default Clone", status: "active" })
-      .select("id")
-      .single();
-
-    if (clone?.id) {
-      console.log(`[getActiveCloneId] Seeded default clone: ${clone.id}`);
-      return clone.id as string;
-    }
-  } catch (err) {
-    console.warn("[getActiveCloneId] Supabase unreachable, fallback to clone_self:", err);
-  }
-
-  return "clone_self";
+  if (error) throw new Error(`Could not load clones: ${error.message}`);
+  if (!data?.id) throw new Error("No active twin exists yet. Create one in Settings first.");
+  return data.id as string;
 }

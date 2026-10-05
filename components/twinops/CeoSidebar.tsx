@@ -1,12 +1,12 @@
 "use client";
 
+import Link from "next/link";
 import {
   BarChart3,
   BookOpen,
   Sparkles,
   Users,
   Settings,
-  Zap,
   LogOut,
   ShieldCheck,
 } from "lucide-react";
@@ -16,7 +16,6 @@ export type CeoView = "insights" | "clones" | "knowledge";
 interface CeoSidebarProps {
   activeView: CeoView;
   onViewChange: (view: CeoView) => void;
-  onDemoMode: () => void;
 }
 
 const navItems: { id: CeoView; label: string; icon: React.ReactNode }[] = [
@@ -37,7 +36,7 @@ const navItems: { id: CeoView; label: string; icon: React.ReactNode }[] = [
   },
 ];
 
-export function CeoSidebar({ activeView, onViewChange, onDemoMode }: CeoSidebarProps) {
+export function CeoSidebar({ activeView, onViewChange }: CeoSidebarProps) {
   return (
     <aside className="flex h-full w-[250px] flex-col bg-[#eaf0f6] border-r border-[#d4deeb] select-none">
       {/* Logo */}
@@ -58,13 +57,12 @@ export function CeoSidebar({ activeView, onViewChange, onDemoMode }: CeoSidebarP
       {/* Role Capsule */}
       <div className="mx-3 mb-4 rounded-xl bg-[#f1f5fa] p-2.5 shadow-[inset_2px_2px_4px_#cfd8e5,inset_-2px_-2px_4px_#ffffff] border border-white/60">
         <div className="flex items-center gap-2">
-          <div className="h-2.5 w-2.5 rounded-full bg-amber-500 shadow-[0_0_8px_#f59e0b]" />
           <p className="text-[12px] font-bold text-slate-800">
-            Delivery Leadership
+            Leadership view
           </p>
         </div>
-        <p className="text-[10px] text-slate-500 pl-4.5">
-          Enterprise Multi-Pod Oversight
+        <p className="text-[10px] text-slate-500">
+          Ask all twins at once
         </p>
       </div>
 
@@ -96,27 +94,20 @@ export function CeoSidebar({ activeView, onViewChange, onDemoMode }: CeoSidebarP
 
       {/* Bottom actions */}
       <div className="p-3 border-t border-[#d4deeb] space-y-2">
-        <a
+        <Link
           href="/settings"
           className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-[12.5px] font-semibold text-slate-600 transition-all hover:bg-[#f1f5fa] hover:shadow-[3px_3px_7px_#cfd8e5,-3px_-3px_7px_#ffffff]"
         >
           <Settings size={16} className="text-slate-400" />
-          Settings & Keys
-        </a>
-        <button
-          onClick={onDemoMode}
-          className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 py-2.5 text-[12.5px] font-bold text-white shadow-[4px_4px_10px_#cfd8e5,-4px_-4px_10px_#ffffff] hover:opacity-95 active:scale-[0.98] transition-all"
-        >
-          <Zap size={14} className="fill-white" />
-          Poll All Pod Leads
-        </button>
-        <a
-          href="/employee"
+          Twins &amp; integrations
+        </Link>
+        <Link
+          href="/"
           className="flex w-full items-center justify-center gap-1.5 py-1 text-[11px] font-medium text-slate-400 hover:text-slate-600 transition-colors"
         >
           <LogOut size={12} />
-          Switch to Pod View
-        </a>
+          Switch view
+        </Link>
       </div>
     </aside>
   );

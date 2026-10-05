@@ -85,9 +85,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    return NextResponse.redirect(
-      `${baseUrl}/auth/complete?email=${encodeURIComponent(userEmail)}`
-    );
+    return NextResponse.redirect(`${settingsUrl}?google=connected&email=${encodeURIComponent(userEmail)}`);
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "Unknown OAuth error";

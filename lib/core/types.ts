@@ -37,6 +37,13 @@ export interface ClonePersonality {
   tone: string;
   bio: string;
   expertise_areas: string[];
+  /** Where this twin's knowledge is synced from. */
+  sources?: CloneSources;
+}
+
+export interface CloneSources {
+  github_username?: string;
+  jira_jql?: string;
 }
 
 // Unified memory row — all knowledge lives here

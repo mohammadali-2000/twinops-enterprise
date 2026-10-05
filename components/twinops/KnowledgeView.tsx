@@ -71,6 +71,7 @@ function OnboardingTab({ autoTrigger }: { autoTrigger: number }) {
   const [brief, setBrief] = useState<OnboardingBrief | null>(null);
   const [loading, setLoading] = useState(false);
   const [expandedSection, setExpandedSection] = useState<string | null>("context");
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     fetchOnboardingOptions().then((opts) => setOptions(opts));
@@ -80,9 +81,14 @@ function OnboardingTab({ autoTrigger }: { autoTrigger: number }) {
     if (!selectedRole || !selectedTeam) return;
     setLoading(true);
     setBrief(null);
-    const result = await generateOnboardingBrief(selectedRole, selectedTeam);
-    setBrief(result);
-    setLoading(false);
+    setError(null);
+    try {
+      setBrief(await generateOnboardingBrief(selectedRole, selectedTeam));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to generate onboarding brief");
+    } finally {
+      setLoading(false);
+    }
   }, [selectedRole, selectedTeam]);
 
   useEffect(() => {
@@ -189,6 +195,10 @@ function OnboardingTab({ autoTrigger }: { autoTrigger: number }) {
             Generate Brief
           </button>
         </div>
+        {error && <p className="mt-3 text-[13px] font-semibold text-rose-600">{error}</p>}
+        {options.length === 0 && (
+          <p className="mt-3 text-[13px] text-slate-500">No twins yet. Create twins in Settings first.</p>
+        )}
       </div>
 
       {/* Brief content */}
@@ -690,10 +700,10 @@ const tabs: { id: KnowledgeTab; label: string; icon: React.ReactNode }[] = [
 ];
 
 interface KnowledgeViewProps {
-  demoTrigger: number;
+  demoTrigger?: number;
 }
 
-export function KnowledgeView({ demoTrigger }: KnowledgeViewProps) {
+export function KnowledgeView({ demoTrigger = 0 }: KnowledgeViewProps) {
   const [activeTab, setActiveTab] = useState<KnowledgeTab>("onboarding");
 
   return (

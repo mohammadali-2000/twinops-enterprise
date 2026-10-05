@@ -1,7 +1,6 @@
 /**
  * Memory — organizational knowledge storage, retrieval, and compaction.
  * All knowledge lives in a single `memories` table with type/source discriminators.
- * Supports Supabase and Mem0 providers with fallback.
  *
  * Continual learning features:
  *  - Vector/semantic search via pgvector embeddings
@@ -13,13 +12,10 @@
 import type { Chunk, Memory, EpisodicMetadata, EpisodicEventType, EmotionalValence } from "@/lib/core/types";
 import { createServerSupabaseClient } from "@/lib/core/supabase/server";
 import {
-  isMem0MemoryEnabled,
   readRuntimeEnv,
   isSupabaseConfigured,
   isSupabaseMemoryEnabled as isSupabaseMemoryFlagEnabled,
 } from "./flags";
-import { searchMem0KnowledgeContext } from "./mem0";
-import { searchLocalMemories } from "./local-store";
 
 
 export interface KnowledgeContext {
@@ -85,7 +81,29 @@ function isSupabaseAvailable(): boolean {
 }
 
 function cleanTerm(term: string): string {
-  return term.replace(/[%,'"]/g, "").trim();
+  // PostgREST or() filters break on punctuation like ( ) : ? , so keep only word chars and hyphens.
+  return term.replace(/[^\p{L}\p{N}_-]/gu, "").trim();
+}
+
+const STOPWORDS = new Set([
+  "the", "and", "for", "are", "was", "were", "what", "whats", "when", "where", "which", "who", "whom",
+  "why", "how", "does", "did", "doing", "done", "has", "have", "had", "with", "this", "that", "these",
+  "those", "from", "into", "about", "your", "you", "our", "their", "they", "them", "his", "her", "its",
+  "can", "could", "would", "should", "will", "shall", "any", "all", "some", "there", "here", "tell",
+  "give", "show", "please", "latest", "recent", "current", "status", "asks",
+]);
+
+export function extractSearchTerms(query: string, max = 6): string[] {
+  const terms = query
+    .toLowerCase()
+    .split(/\s+/)
+    .map(cleanTerm)
+    .filter((t) => t.length >= 3 && !STOPWORDS.has(t));
+  return [...new Set(terms)].slice(0, max);
+}
+
+export function extractIssueKeys(query: string): string[] {
+  return [...new Set((query.match(/\b[A-Za-z][A-Za-z0-9]+-\d+\b/g) ?? []).map((k) => k.toUpperCase()))];
 }
 
 function buildIlikeOr(column: string, terms: string[]): string {
@@ -136,40 +154,6 @@ function computeRelevanceScore(
   return base + recencyBonus(occurredAt);
 }
 
-export function searchKnowledgeBase(
-  cloneId: string,
-  query: string,
-  topK: number = 5
-): Chunk[] {
-  const queryTerms = query.toLowerCase().split(/\s+/).filter(Boolean);
-
-  // 1. Search real synced local memories from disk (GitHub, Teams, Docs)
-  let localChunks: Chunk[] = [];
-  try {
-    const localItems = searchLocalMemories(query, topK);
-    localChunks = localItems.map((item: any) => ({
-      id: item.id,
-      document_id: item.metadata?.snapshot_id || item.id,
-      clone_id: cloneId,
-      content: item.content,
-      metadata: {
-        title: item.metadata?.document_title || item.metadata?.title || "Real Workspace Memory",
-        doc_type: item.type || "github_sync",
-        ...item.metadata,
-      },
-      created_at: item.occurred_at,
-    }));
-  } catch {
-    // fallback gracefully
-  }
-
-  return localChunks.slice(0, topK);
-}
-
-export function getCloneMemories(_cloneId: string) {
-  return [];
-}
-
 export function extractFacts(content: string): string[] {
   const sentences = content
     .split(/[.!?]+/)
@@ -186,25 +170,6 @@ export function extractFacts(content: string): string[] {
     ];
     return factPatterns.some((p) => p.test(s));
   });
-}
-
-export function saveFact(
-  cloneId: string,
-  fact: string,
-  conversationId: string
-): Memory {
-  const memory: Memory = {
-    id: `mem_${Date.now()}`,
-    clone_id: cloneId,
-    type: "fact",
-    source: "conversation",
-    content: fact,
-    confidence: 0.85,
-    metadata: { source_conversation_id: conversationId },
-    occurred_at: new Date().toISOString(),
-    created_at: new Date().toISOString(),
-  };
-  return memory;
 }
 
 // ---------------------------------------------------------------------------
@@ -475,18 +440,6 @@ export async function getKnowledgeContext(
   query: string,
   topK: number = 5
 ): Promise<KnowledgeContext | null> {
-  // 1. Try Mem0 first if configured
-  if (isMem0MemoryEnabled()) {
-    try {
-      const mem0Context = await searchMem0KnowledgeContext(cloneId, query, topK);
-      if (mem0Context) {
-        return mem0Context;
-      }
-    } catch (error) {
-      console.error("Mem0 retrieval failed, attempting Supabase fallback:", error);
-    }
-  }
-
   if (!isSupabaseAvailable()) return null;
 
   const supabase = createServerSupabaseClient();
@@ -499,22 +452,28 @@ export async function getKnowledgeContext(
 
   if (queryEmbedding) {
     [vectorItems, vectorChunks, vectorEpisodes] = await Promise.all([
-      vectorSearch(supabase, queryEmbedding, cloneId, "fact", 0.4, topK * 3),
-      vectorSearch(supabase, queryEmbedding, cloneId, "chunk", 0.4, topK * 3),
+      vectorSearch(supabase, queryEmbedding, cloneId, "fact", 0.3, topK * 3),
+      vectorSearch(supabase, queryEmbedding, cloneId, "chunk", 0.3, topK * 3),
       vectorSearch(supabase, queryEmbedding, cloneId, "episodic", 0.35, topK * 2),
     ]);
   }
 
-  const hasVectorResults =
-    (vectorItems && vectorItems.length > 0) ||
-    (vectorChunks && vectorChunks.length > 0);
+  const needKeywordItems = !vectorItems || vectorItems.length === 0;
+  const needKeywordChunks = !vectorChunks || vectorChunks.length === 0;
 
-  // 3. Keyword fallback (or supplement) for items and chunks
-  const terms = query
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((t) => t.length >= 3)
-    .slice(0, 6);
+  // 3. Keyword fallback for items and chunks, plus exact Jira issue-key lookup
+  const terms = extractSearchTerms(query);
+  const issueKeys = extractIssueKeys(query);
+  const issueKeyChunksPromise =
+    issueKeys.length > 0
+      ? supabase
+          .from("memories")
+          .select("id, clone_id, content, metadata, created_at")
+          .eq("clone_id", cloneId)
+          .eq("type", "chunk")
+          .in("metadata->>issue_key", issueKeys)
+          .limit(topK * 2)
+      : null;
 
   // Always fetch categories, resources, and episodic memories via keyword
   const categoryQuery = supabase
@@ -554,29 +513,26 @@ export async function getKnowledgeContext(
   let keywordItemsPromise: any = null;
   let keywordChunksPromise: any = null;
 
-  if (!hasVectorResults) {
-    let itemQuery = supabase
+  if (needKeywordItems && terms.length > 0) {
+    keywordItemsPromise = supabase
       .from("memories")
       .select("content, confidence, source, occurred_at, metadata")
       .eq("clone_id", cloneId)
       .eq("type", "fact")
+      .or(buildIlikeOr("content", terms))
       .order("confidence", { ascending: false })
       .limit(topK * 2);
+  }
 
-    let chunkQuery = supabase
+  if (needKeywordChunks && terms.length > 0) {
+    keywordChunksPromise = supabase
       .from("memories")
       .select("id, clone_id, content, metadata, created_at")
       .eq("clone_id", cloneId)
       .eq("type", "chunk")
+      .or(buildIlikeOr("content", terms))
       .order("created_at", { ascending: false })
       .limit(topK * 3);
-
-    if (terms.length > 0) {
-      itemQuery = itemQuery.or(buildIlikeOr("content", terms));
-      chunkQuery = chunkQuery.or(buildIlikeOr("content", terms));
-    }
-    keywordItemsPromise = itemQuery;
-    keywordChunksPromise = chunkQuery;
   }
 
   // Execute all queries in parallel
@@ -584,8 +540,12 @@ export async function getKnowledgeContext(
   if (keywordEpisodesPromise) promises.push(keywordEpisodesPromise);
   if (keywordItemsPromise) promises.push(keywordItemsPromise);
   if (keywordChunksPromise) promises.push(keywordChunksPromise);
+  if (issueKeyChunksPromise) promises.push(issueKeyChunksPromise);
 
   const results = await Promise.all(promises);
+  for (const result of results) {
+    if (result?.error) console.error("[memory] Knowledge query failed:", result.error.message);
+  }
   let resultIdx = 2; // 0 = categories, 1 = resources
 
   const categories = results[0].data as Array<{
@@ -620,6 +580,9 @@ export async function getKnowledgeContext(
       }> | null)
     : null;
   const keywordChunks = keywordChunksPromise
+    ? (results[resultIdx++].data as Chunk[] | null)
+    : null;
+  const issueKeyChunks = issueKeyChunksPromise
     ? (results[resultIdx++].data as Chunk[] | null)
     : null;
 
@@ -666,6 +629,10 @@ export async function getKnowledgeContext(
       .map(({ _score: _, ...rest }) => rest);
   } else {
     finalChunks = (keywordChunks as Chunk[]) || [];
+  }
+  if (issueKeyChunks && issueKeyChunks.length > 0) {
+    const seen = new Set(issueKeyChunks.map((c) => c.id));
+    finalChunks = [...issueKeyChunks, ...finalChunks.filter((c) => !seen.has(c.id))];
   }
 
   // 6. Build episodes from vector search OR keyword fallback, with temporal boosting

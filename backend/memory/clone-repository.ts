@@ -88,6 +88,7 @@ function normalizePersonality(value: unknown): ClonePersonality {
     expertise_areas: Array.isArray(raw.expertise_areas)
       ? raw.expertise_areas.filter((v): v is string => typeof v === "string")
       : [],
+    sources: raw.sources && typeof raw.sources === "object" ? raw.sources : {},
   };
 }
 
@@ -128,8 +129,8 @@ function ownerFromClone(clone: Clone): PersonContext {
 }
 
 export async function getCloneRuntime(cloneId?: string): Promise<CloneRuntime> {
-  const requestedId = cloneId || "clone_self";
-  if (!isSupabaseConfigured()) {
+  const requestedId = cloneId;
+  if (!requestedId || !isSupabaseConfigured()) {
     return { clone: null };
   }
 
@@ -247,5 +248,152 @@ export async function getCloneDetailForApi(
         ),
       },
     },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Clone management
+// ---------------------------------------------------------------------------
+
+export interface CloneInput {
+  name: string;
+  owner_email?: string;
+  owner_role?: string;
+  owner_department?: string;
+  expertise_tags?: string[];
+  communication_style?: ClonePersonality["communication_style"];
+  bio?: string;
+  github_username?: string;
+  jira_jql?: string;
+}
+
+const CLONE_COLUMNS =
+  "id, name, avatar_url, personality, expertise_tags, status, owner_name, owner_email, owner_role, owner_department, created_at, trained_at";
+
+function requireSupabase() {
+  if (!isSupabaseConfigured()) {
+    throw new Error("Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.");
+  }
+  return createServerSupabaseClient();
+}
+
+function personalityFromInput(input: CloneInput, existing?: ClonePersonality): ClonePersonality {
+  const base = existing ?? defaultPersonality();
+  return {
+    ...base,
+    communication_style: input.communication_style ?? base.communication_style,
+    tone: base.tone || "Professional, clear, and concise.",
+    bio: input.bio ?? base.bio,
+    expertise_areas: input.expertise_tags ?? base.expertise_areas,
+    sources: {
+      ...base.sources,
+      ...(input.github_username !== undefined ? { github_username: input.github_username } : {}),
+      ...(input.jira_jql !== undefined ? { jira_jql: input.jira_jql } : {}),
+    },
+  };
+}
+
+export async function createClone(input: CloneInput): Promise<Clone> {
+  const { data, error } = await requireSupabase()
+    .from("clones")
+    .insert({
+      name: input.name,
+      owner_name: input.name,
+      owner_email: input.owner_email || null,
+      owner_role: input.owner_role || null,
+      owner_department: input.owner_department || null,
+      expertise_tags: input.expertise_tags ?? [],
+      personality: personalityFromInput(input),
+      status: "active",
+    })
+    .select(CLONE_COLUMNS)
+    .single();
+  if (error) throw new Error(`Could not create twin: ${error.message}`);
+  return mapClone(data as SupabaseCloneRow);
+}
+
+export async function updateClone(id: string, input: Partial<CloneInput>): Promise<Clone | null> {
+  const supabase = requireSupabase();
+  const { data: existing } = await supabase.from("clones").select(CLONE_COLUMNS).eq("id", id).maybeSingle();
+  if (!existing) return null;
+  const current = mapClone(existing as SupabaseCloneRow);
+
+  const patch: Record<string, unknown> = {
+    personality: personalityFromInput({ name: current.name, ...input }, current.personality),
+  };
+  if (input.name !== undefined) {
+    patch.name = input.name;
+    patch.owner_name = input.name;
+  }
+  if (input.owner_email !== undefined) patch.owner_email = input.owner_email || null;
+  if (input.owner_role !== undefined) patch.owner_role = input.owner_role || null;
+  if (input.owner_department !== undefined) patch.owner_department = input.owner_department || null;
+  if (input.expertise_tags !== undefined) patch.expertise_tags = input.expertise_tags;
+
+  const { data, error } = await supabase.from("clones").update(patch).eq("id", id).select(CLONE_COLUMNS).single();
+  if (error) throw new Error(`Could not update twin: ${error.message}`);
+  return mapClone(data as SupabaseCloneRow);
+}
+
+export async function deleteClone(id: string): Promise<boolean> {
+  const { data, error } = await requireSupabase().from("clones").delete().eq("id", id).select("id");
+  if (error) throw new Error(`Could not delete twin: ${error.message}`);
+  return (data ?? []).length > 0;
+}
+
+export async function markCloneTrained(id: string): Promise<void> {
+  await requireSupabase().from("clones").update({ trained_at: new Date().toISOString() }).eq("id", id);
+}
+
+const STYLES = ["direct", "detailed", "casual", "formal"] as const;
+
+function optionalString(value: unknown, field: string, max: number): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") throw new Error(`${field} must be a string`);
+  const trimmed = value.trim();
+  if (trimmed.length > max) throw new Error(`${field} is too long (max ${max} characters)`);
+  return trimmed;
+}
+
+/** Validate a create/update body from the API. Throws with a user-readable message. */
+export function parseCloneInput(body: unknown, requireName: boolean): Partial<CloneInput> {
+  if (!body || typeof body !== "object") throw new Error("Request body must be a JSON object");
+  const b = body as Record<string, unknown>;
+
+  const name = optionalString(b.name, "name", 100);
+  if (requireName && !name) throw new Error("name is required");
+
+  const tagsRaw = b.expertise_tags;
+  let expertise_tags: string[] | undefined;
+  if (tagsRaw !== undefined) {
+    const list = Array.isArray(tagsRaw) ? tagsRaw : typeof tagsRaw === "string" ? tagsRaw.split(",") : null;
+    if (!list) throw new Error("expertise_tags must be a list or comma-separated string");
+    expertise_tags = list
+      .filter((t): t is string => typeof t === "string")
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .slice(0, 20);
+  }
+
+  const style = b.communication_style;
+  if (style !== undefined && !STYLES.includes(style as (typeof STYLES)[number])) {
+    throw new Error(`communication_style must be one of: ${STYLES.join(", ")}`);
+  }
+
+  const github_username = optionalString(b.github_username, "github_username", 39);
+  if (github_username && !/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(github_username)) {
+    throw new Error("github_username is not a valid GitHub username");
+  }
+
+  return {
+    ...(name !== undefined ? { name } : {}),
+    ...(expertise_tags !== undefined ? { expertise_tags } : {}),
+    ...(style !== undefined ? { communication_style: style as CloneInput["communication_style"] } : {}),
+    owner_email: optionalString(b.owner_email, "owner_email", 200),
+    owner_role: optionalString(b.owner_role, "owner_role", 100),
+    owner_department: optionalString(b.owner_department, "owner_department", 100),
+    bio: optionalString(b.bio, "bio", 1000),
+    github_username,
+    jira_jql: optionalString(b.jira_jql, "jira_jql", 500),
   };
 }

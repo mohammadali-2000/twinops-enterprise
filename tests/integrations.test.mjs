@@ -62,3 +62,19 @@ test("Microsoft Teams Integration - Webhook URL Validation", async () => {
   assert.equal(emptyResult.success, false);
   assert.match(emptyResult.error, /Invalid Microsoft Teams Webhook URL/i);
 });
+
+test("Jira Integration - ADF description flattens to plain text", async () => {
+  const { adfToText } = await import("../lib/integrations/jira.ts");
+  const adf = {
+    type: "doc",
+    content: [
+      { type: "paragraph", content: [{ type: "text", text: "Migrate the " }, { type: "text", text: "auth service" }] },
+      { type: "bulletList", content: [{ type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: "Add tests" }] }] }] },
+    ],
+  };
+  const text = adfToText(adf);
+  assert.match(text, /Migrate the auth service/);
+  assert.match(text, /Add tests/);
+  assert.equal(adfToText(null), "");
+  assert.equal(adfToText("plain"), "plain");
+});

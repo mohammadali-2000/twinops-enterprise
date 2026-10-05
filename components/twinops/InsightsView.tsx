@@ -22,7 +22,6 @@ import {
   Loader2,
 } from "lucide-react";
 import { streamInsightsQuery, getAvailableTeams } from "@/lib/twinops/api";
-import { AgentNetworkView } from "./AgentNetworkView";
 import type {
   StreamStage,
   QueryPlan,
@@ -459,11 +458,7 @@ function ThemeDrawer({
 // Main Management Insights Component
 // ============================================
 
-interface InsightsViewProps {
-  demoTrigger: number;
-}
-
-export function InsightsView({ demoTrigger }: InsightsViewProps) {
+export function InsightsView() {
   const [query, setQuery] = useState("");
   const [stage, setStage] = useState<StreamStage>("idle");
   const [plan, setPlan] = useState<QueryPlan | null>(null);
@@ -483,7 +478,7 @@ export function InsightsView({ demoTrigger }: InsightsViewProps) {
     useState<EmployeeResponse | null>(null);
   const [selectedTheme, setSelectedTheme] = useState<Theme | null>(null);
   const [isRunning, setIsRunning] = useState(false);
-  const [networkTrigger, setNetworkTrigger] = useState(0);
+  const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const responsesEndRef = useRef<HTMLDivElement>(null);
 
@@ -501,7 +496,7 @@ export function InsightsView({ demoTrigger }: InsightsViewProps) {
       }
 
       setIsRunning(true);
-      setNetworkTrigger((n) => n + 1);
+      setError(null);
       setResponses([]);
       setAggregation(null);
       setStage("idle");
@@ -525,8 +520,11 @@ export function InsightsView({ demoTrigger }: InsightsViewProps) {
               break;
           }
         }
-      } catch {
-        // stream aborted
+      } catch (err) {
+        if (!(err instanceof DOMException && err.name === "AbortError")) {
+          setError(err instanceof Error ? err.message : "Analysis failed");
+          setStage("complete");
+        }
       }
       setIsRunning(false);
     },
@@ -555,20 +553,6 @@ export function InsightsView({ demoTrigger }: InsightsViewProps) {
   );
 
   useEffect(() => {
-    if (demoTrigger > 0) {
-      const demoQuery =
-        "If we migrate the backend from AWS to on-prem OpenShift, what will the pod engineers say?";
-      setQuery(demoQuery);
-      setPreviousAggregation(null);
-      setPreviousThemeCounts({});
-      setFilters({ teams: [] });
-      setTimeout(() => {
-        runQuery(demoQuery, { teams: [] });
-      }, 100);
-    }
-  }, [demoTrigger]);
-
-  useEffect(() => {
     responsesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [responses.length]);
 
@@ -584,7 +568,7 @@ export function InsightsView({ demoTrigger }: InsightsViewProps) {
             Pod Alignment & Polling
           </h2>
           <p className="mt-0.5 text-[12px] font-medium text-slate-500">
-            Simulate decisions across all employee digital twins
+            Ask every twin the same question and compare their answers
           </p>
         </div>
 
@@ -593,7 +577,7 @@ export function InsightsView({ demoTrigger }: InsightsViewProps) {
           <textarea
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="e.g. If we deprecate legacy APIs or mandate 3-day office, what is team reaction?"
+            placeholder="e.g. Are we ready to release this sprint? What is blocking us?"
             rows={3}
             className="mb-3 w-full resize-none rounded-xl border border-[#d8e2ed] bg-[#f1f5fa] px-3.5 py-2.5 text-[13px] font-medium text-slate-800 placeholder:text-slate-400 shadow-[inset_2px_2px_4px_#cfd8e5,inset_-2px_-2px_4px_#ffffff] focus:border-indigo-400 focus:outline-none"
             onKeyDown={(e) => {
@@ -610,7 +594,7 @@ export function InsightsView({ demoTrigger }: InsightsViewProps) {
             ) : (
               <Play size={15} />
             )}
-            {isRunning ? "Synthesizing Mesh…" : "Poll Digital Twins"}
+            {isRunning ? "Asking twins…" : "Ask all twins"}
           </button>
         </form>
 
@@ -686,18 +670,17 @@ export function InsightsView({ demoTrigger }: InsightsViewProps) {
               <Search size={24} className="text-indigo-600" />
             </div>
             <h3 className="mb-1 text-[16px] font-bold text-slate-800">
-              Simulate organizational decisions
+              Ask the whole team at once
             </h3>
             <p className="max-w-sm text-[13px] font-medium text-slate-500">
-              TwinOps will query each domain twin, evaluate impacts against real codebases, and synthesize aggregate sentiment.
+              Each twin answers from its own synced GitHub and Jira data, with citations. TwinOps then summarizes where the team agrees and disagrees.
             </p>
           </div>
         ) : (
           <div className="mx-auto max-w-3xl space-y-6">
-            {/* Agent Network Visualization */}
-            {(isRunning || stage !== "complete") && (
-              <div className="animate-fade-in">
-                <AgentNetworkView trigger={networkTrigger} />
+            {error && (
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-[13px] font-semibold text-rose-700">
+                {error}
               </div>
             )}
 

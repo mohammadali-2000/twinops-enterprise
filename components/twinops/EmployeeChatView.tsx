@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import {
   useState,
   useRef,
@@ -82,7 +83,7 @@ function MemoryPanel({
         {isOpen && (
           <div className="flex-1 min-w-0">
             <span className="text-[12px] font-bold text-slate-800 tracking-tight">
-              Continual Learning
+              Synced Knowledge
             </span>
             <span className="ml-1.5 rounded-full bg-indigo-100 border border-indigo-200 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700">
               {entries.length}
@@ -101,7 +102,7 @@ function MemoryPanel({
             <div className="px-3 py-8 text-center bg-[#f1f5fa] rounded-2xl border border-[#d8e2ed] shadow-[inset_2px_2px_4px_#cfd8e5,inset_-2px_-2px_4px_#ffffff]">
               <Brain size={22} className="mx-auto mb-2 text-slate-400" />
               <p className="text-[11.5px] font-medium text-slate-500">
-                Memories will appear here as {cloneName.split(" ")[0]} learns from conversations and commits.
+                Synced GitHub repos and Jira tickets appear here. Use “Sync my GitHub &amp; Jira” in the sidebar.
               </p>
             </div>
           ) : (
@@ -215,55 +216,10 @@ function ChatBubble({
 // ---- Agent Thinking Steps ----
 
 function AgentThinkingSteps({ cloneName }: { cloneName: string }) {
-  const [step, setStep] = useState(0);
-
-  useEffect(() => {
-    const timers = [
-      setTimeout(() => setStep(1), 600),
-      setTimeout(() => setStep(2), 2000),
-      setTimeout(() => setStep(3), 3800),
-    ];
-    return () => timers.forEach(clearTimeout);
-  }, []);
-
-  const steps = [
-    { label: "Searching local knowledge base", icon: <Search size={12} /> },
-    { label: "Retrieving semantic memories & commits", icon: <Brain size={12} /> },
-    { label: `Consulting pod coworker twins`, icon: <Users size={12} /> },
-    { label: "Composing grounded response", icon: <Sparkles size={12} /> },
-  ];
-
   return (
-    <div className="space-y-2.5 py-1">
-      {steps.map((s, i) => (
-        <div
-          key={i}
-          className="flex items-center gap-2.5 text-[12px]"
-          style={{
-            opacity: i <= step ? 1 : 0.4,
-            transition: "opacity 0.3s ease",
-          }}
-        >
-          {i < step ? (
-            <CheckCircle2 size={13} className="flex-shrink-0 text-emerald-600" />
-          ) : i === step ? (
-            <Loader2 size={13} className="flex-shrink-0 animate-spin text-indigo-600" />
-          ) : (
-            <Circle size={13} className="flex-shrink-0 text-slate-300" />
-          )}
-          <span
-            className={
-              i < step
-                ? "text-slate-400 line-through decoration-slate-300"
-                : i === step
-                ? "font-semibold text-indigo-600"
-                : "text-slate-400"
-            }
-          >
-            {s.label}
-          </span>
-        </div>
-      ))}
+    <div className="flex items-center gap-2.5 py-1 text-[12px] font-semibold text-indigo-600">
+      <Loader2 size={13} className="flex-shrink-0 animate-spin" />
+      Searching {cloneName}&apos;s synced GitHub &amp; Jira memory and writing an answer…
     </div>
   );
 }
@@ -272,11 +228,7 @@ function AgentThinkingSteps({ cloneName }: { cloneName: string }) {
 // Main Employee Chat View
 // ============================================
 
-interface EmployeeChatViewProps {
-  demoTrigger: number;
-}
-
-export function EmployeeChatView({ demoTrigger }: EmployeeChatViewProps) {
+export function EmployeeChatView() {
   const [profile, setProfile] = useState<CloneProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -310,27 +262,11 @@ export function EmployeeChatView({ demoTrigger }: EmployeeChatViewProps) {
   useEffect(() => { messagesRef.current = messages; }, [messages]);
   useEffect(() => { modeRef.current = mode; }, [mode]);
 
-  // Load the employee's own twin clone based on email mapping
+  // Load the twin chosen on the login screen.
   useEffect(() => {
+    const cloneId = sessionStorage.getItem("twinops_clone_id") || "";
     fetchCloneProfiles().then((profiles) => {
-      const cloneName = typeof window !== "undefined"
-        ? sessionStorage.getItem("twinops_clone_name") || ""
-        : "";
-      
-      if (cloneName) {
-        const match = profiles.find((p) =>
-          p.employee.name.toLowerCase().includes(cloneName.toLowerCase())
-        );
-        if (match) {
-          setProfile(match);
-          setLoading(false);
-          return;
-        }
-      }
-
-      if (profiles.length > 0) {
-        setProfile(profiles[0]);
-      }
+      setProfile(profiles.find((p) => p.employee.id === cloneId) ?? null);
       setLoading(false);
     });
   }, []);
@@ -496,20 +432,6 @@ export function EmployeeChatView({ demoTrigger }: EmployeeChatViewProps) {
       setStreamingContent("");
       setStreamingCitations([]);
 
-      const extractingId = `extracting_${Date.now()}`;
-      if (question.length >= 20) {
-        setMemoryEntries((prev) => [
-          {
-            id: extractingId,
-            fact: `Learning from: "${question.slice(0, 100)}${question.length > 100 ? "…" : ""}"`,
-            source: "conversation",
-            timestamp: new Date().toISOString(),
-            status: "extracting",
-          },
-          ...prev,
-        ]);
-      }
-
       try {
         let accumulated = "";
         let cites: Citation[] = [];
@@ -527,10 +449,6 @@ export function EmployeeChatView({ demoTrigger }: EmployeeChatViewProps) {
           } else if (event.type === "citations") {
             cites = event.citations;
             setStreamingCitations(cites);
-          } else if (event.type === "learning") {
-            setMemoryEntries((prev) =>
-              prev.filter((e) => e.id !== extractingId)
-            );
           }
         }
 
@@ -547,9 +465,15 @@ export function EmployeeChatView({ demoTrigger }: EmployeeChatViewProps) {
           speakText(accumulated);
         }
       } catch {
-        setMemoryEntries((prev) =>
-          prev.filter((e) => e.id !== extractingId)
-        );
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: nextMsgId(),
+            role: "assistant",
+            content: "Could not reach the twin. Check that the server is running and configured.",
+            timestamp: new Date().toISOString(),
+          },
+        ]);
       }
 
       setIsStreaming(false);
@@ -638,12 +562,6 @@ export function EmployeeChatView({ demoTrigger }: EmployeeChatViewProps) {
     }
   }, [isRecording]);
 
-  useEffect(() => {
-    if (demoTrigger > 0 && profile) {
-      sendMessage("What are you currently working on?");
-    }
-  }, [demoTrigger]);
-
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center bg-[#eaf0f6]">
@@ -655,7 +573,17 @@ export function EmployeeChatView({ demoTrigger }: EmployeeChatViewProps) {
     );
   }
 
-  const cloneName = profile?.employee.name || "Your Twin";
+  if (!profile) {
+    return (
+      <div className="flex h-full items-center justify-center bg-[#eaf0f6]">
+        <p className="text-sm font-semibold text-slate-600">
+          No twin selected. <Link href="/" className="text-indigo-600 underline">Choose your twin</Link> first.
+        </p>
+      </div>
+    );
+  }
+
+  const cloneName = profile.employee.name;
   const displayName = cloneName.replace(" [Twin Clone]", "");
   const initials = profile?.employee.initials || "??";
 
@@ -674,7 +602,9 @@ export function EmployeeChatView({ demoTrigger }: EmployeeChatViewProps) {
                 <h3 className="text-[14.5px] font-bold text-slate-800">{cloneName}</h3>
                 <span className="flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-200/80 px-2.5 py-0.5 text-[10.5px] font-bold text-emerald-700 shadow-[1px_1px_3px_#cfd8e5]">
                   <Bot size={11} />
-                  AI Twin Active
+                  {profile.trainedAt
+                    ? `Synced ${new Date(profile.trainedAt).toLocaleDateString()}`
+                    : "Not synced yet"}
                 </span>
               </div>
               <p className="text-[12px] font-medium text-slate-500 line-clamp-1">
@@ -721,15 +651,10 @@ export function EmployeeChatView({ demoTrigger }: EmployeeChatViewProps) {
                 Talk to your AI Twin
               </h3>
               <p className="mb-6 text-[13px] leading-relaxed text-slate-600 font-medium">
-                {profile?.personality || "Your enterprise digital twin is synced and ready to converse."}
+                {profile.personality || `Ask ${cloneName}'s twin about their GitHub repos and Jira tickets.`}
               </p>
               <div className="grid grid-cols-2 gap-2.5 mx-auto max-w-md">
-                {(profile?.suggestedQuestions || [
-                  "What are you working on?",
-                  "What should I know today?",
-                  "What are the biggest risks?",
-                  "Tell me about recent decisions.",
-                ]).map((q) => (
+                {profile.suggestedQuestions.map((q) => (
                   <button
                     key={q}
                     onClick={() => sendMessage(q)}

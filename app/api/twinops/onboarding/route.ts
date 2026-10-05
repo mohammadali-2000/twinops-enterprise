@@ -1,15 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/core/supabase/server";
+import { askForJson, formatDate, formatDocsForPrompt, loadSourceDocs, pickDocs } from "@/lib/agents/briefs";
 import type { OnboardingBrief } from "@/lib/twinops/types";
-
-function getInitials(name: string): string {
-  return name
-    .split(" ")
-    .map((w) => w[0])
-    .join("")
-    .toUpperCase()
-    .slice(0, 2);
-}
 
 interface CloneRow {
   id: string;
@@ -17,231 +9,129 @@ interface CloneRow {
   owner_role: string | null;
   owner_department: string | null;
   expertise_tags: string[] | null;
-  personality: Record<string, unknown> | null;
 }
 
-interface MemoryRow {
-  content: string;
-  source: string;
-  confidence: number | null;
-  metadata: Record<string, unknown> | null;
-  occurred_at: string;
+async function loadActiveClones(): Promise<CloneRow[]> {
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    throw new Error("Supabase is not configured.");
+  }
+  const { data, error } = await createServerSupabaseClient()
+    .from("clones")
+    .select("id, name, owner_role, owner_department, expertise_tags")
+    .eq("status", "active")
+    .order("created_at", { ascending: true });
+  if (error) throw new Error(error.message);
+  return (data ?? []) as CloneRow[];
 }
 
-/**
- * GET /api/twinops/onboarding
- * Returns available onboarding options (roles/teams) from real clone data.
- */
+/** GET /api/twinops/onboarding: role/team options taken from the real twins. */
 export async function GET() {
   try {
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-    if (!supabaseUrl || !supabaseKey) {
-      return NextResponse.json({
-        options: [
-          { role: "Product Manager", team: "Product" },
-          { role: "Software Engineer", team: "Engineering" },
-          { role: "Account Executive", team: "Sales" },
-        ],
-      });
-    }
-
-    const supabase = createServerSupabaseClient();
-    const { data: clones, error } = await supabase
-      .from("clones")
-      .select("id, name, owner_role, owner_department")
-      .order("created_at", { ascending: true });
-
-    if (error || !clones || clones.length === 0) {
-      return NextResponse.json({ options: [] });
-    }
-
-    // Build unique role/team combinations from real clones
+    const clones = await loadActiveClones();
     const seen = new Set<string>();
     const options: { role: string; team: string }[] = [];
     for (const c of clones) {
       const role = c.owner_role || "Team Member";
       const team = c.owner_department || "General";
-      const key = `${role}-${team}`;
-      if (!seen.has(key)) {
-        seen.add(key);
+      if (!seen.has(`${role}|${team}`)) {
+        seen.add(`${role}|${team}`);
         options.push({ role, team });
       }
     }
-
     return NextResponse.json({ options });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : "Unknown error";
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return NextResponse.json({ error: err instanceof Error ? err.message : "Unknown error" }, { status: 500 });
   }
 }
 
+type BriefDraft = {
+  keyContext: string[];
+  decisions: { decision: string; rationale: string; source_ids: number[] }[];
+  risks: { risk: string; severity: string; context: string; source_ids: number[] }[];
+};
+
 /**
- * POST /api/twinops/onboarding
- * Body: { role: string, team: string }
- * Generates an onboarding brief from Supabase synthetic data.
+ * POST /api/twinops/onboarding  { role, team }
+ * Builds an onboarding brief for a new joiner from the team's synced GitHub/Jira data.
  */
 export async function POST(request: NextRequest) {
   try {
-    const { role, team } = (await request.json()) as {
-      role: string;
-      team: string;
-    };
+    const { role, team } = (await request.json()) as { role?: string; team?: string };
+    if (!role || !team) return NextResponse.json({ error: "role and team are required" }, { status: 400 });
 
-    const supabase = createServerSupabaseClient();
+    const allClones = await loadActiveClones();
+    const teamClones = allClones.filter((c) => (c.owner_department || "General") === team);
+    const scope = teamClones.length > 0 ? teamClones : allClones;
+    const docs = await loadSourceDocs(scope.map((c) => c.id), 25);
 
-    // Fetch all clones for "key people"
-    const { data: clones } = await supabase
-      .from("clones")
-      .select(
-        "id, name, owner_role, owner_department, expertise_tags, personality"
-      )
-      .order("created_at", { ascending: true });
+    const keyPeople = scope.map((c) => ({
+      name: c.name,
+      role: c.owner_role || "Team Member",
+      relationship: `${c.owner_role || "Team Member"} in ${c.owner_department || "General"}`,
+      tip: c.expertise_tags?.length ? `Ask about: ${c.expertise_tags.slice(0, 4).join(", ")}` : "",
+    }));
 
-    const allClones = (clones || []) as CloneRow[];
+    const keyDocs = docs.slice(0, 6).map((d) => ({
+      title: d.title,
+      type: d.source,
+      url: d.url,
+      relevance: d.content.slice(0, 140) + (d.content.length > 140 ? "…" : ""),
+    }));
 
-    // Pick a clone whose role/department matches, or first clone
-    const targetClone =
-      allClones.find(
-        (c) =>
-          (c.owner_role || "").toLowerCase() === role.toLowerCase() ||
-          (c.owner_department || "").toLowerCase() === team.toLowerCase()
-      ) || allClones[0];
-
-    const cloneId = targetClone?.id;
-
-    // Fetch fact memories for context and decisions
-    const { data: facts } = await supabase
-      .from("memories")
-      .select("content, source, confidence, metadata, occurred_at")
-      .eq("type", "fact")
-      .order("confidence", { ascending: false })
-      .limit(30);
-
-    // Fetch document memories for key docs
-    const { data: docs } = await supabase
-      .from("memories")
-      .select("content, source, confidence, metadata, occurred_at")
-      .eq("type", "document")
-      .order("occurred_at", { ascending: false })
-      .limit(15);
-
-    const factRows = (facts || []) as MemoryRow[];
-    const docRows = (docs || []) as MemoryRow[];
-
-    // ---- Build key context from top facts ----
-    const keyContext: string[] = [];
-    // Add team overview
-    keyContext.push(
-      `The team consists of ${allClones.length} members: ${allClones.map((c) => `${c.name.replace(/\s*\(Clone\)$/i, "")} (${c.owner_role || "Team Member"})`).join(", ")}.`
-    );
-    // Add top facts as context
-    const topFacts = factRows
-      .filter((f) => (f.confidence ?? 0) >= 0.7)
-      .slice(0, 4);
-    for (const fact of topFacts) {
-      keyContext.push(fact.content);
-    }
-
-    // ---- Build key people from all clones ----
-    const keyPeople = allClones.map((c) => {
-      const name = c.name.replace(/\s*\(Clone\)$/i, "");
-      const cRole = c.owner_role || "Team Member";
-      const expertise = c.expertise_tags?.slice(0, 3).join(", ") || "";
-      const personality = c.personality as unknown as Record<string, unknown> | null;
-      const bio = (personality?.bio as string) || "";
-      const tone = (personality?.tone as string) || "";
-
-      return {
-        name,
-        role: cRole,
-        relationship:
-          c.id === cloneId
-            ? `Your role counterpart on the ${c.owner_department || "team"} team.`
-            : `${cRole} on the ${c.owner_department || "team"} team. Expertise: ${expertise || "general"}.`,
-        tip: tone || bio || `Connect about ${expertise || "their area of work"}.`,
-      };
-    });
-
-    // ---- Build key docs from document memories ----
-    const keyDocs = docRows.slice(0, 5).map((doc) => {
-      const meta = doc.metadata || {};
-      const title = (meta.title as string) || "Document";
-      const sourceType = doc.source || "document";
-      const sourceUrl = (meta.source_url as string) || "";
-      return {
-        title,
-        type: sourceType,
-        url: sourceUrl || `#${sourceType}`,
-        relevance: doc.content.slice(0, 120) + (doc.content.length > 120 ? "…" : ""),
-      };
-    });
-
-    // ---- Build decisions from fact memories with decision keywords ----
-    const decisionFacts = factRows.filter((f) =>
-      /decided|confirmed|agreed|approved|going with|chose|locked|prioriti/i.test(
-        f.content
-      )
-    );
-    const decisions = decisionFacts.slice(0, 4).map((f) => {
-      const meta = f.metadata || {};
-      const date = new Date(f.occurred_at).toLocaleDateString("en-US", {
-        month: "short",
-        day: "numeric",
-        year: "numeric",
-      });
-      const participants = allClones
-        .filter((c) => {
-          const name = c.name.replace(/\s*\(Clone\)$/i, "");
-          return f.content.includes(name);
-        })
-        .map((c) => c.name.replace(/\s*\(Clone\)$/i, ""));
-      if (participants.length === 0 && meta.author) {
-        participants.push(String(meta.author));
-      }
-      return {
-        decision: f.content,
-        date,
-        rationale: `From ${f.source} source (confidence: ${((f.confidence ?? 0.5) * 100).toFixed(0)}%).`,
-        participants:
-          participants.length > 0
-            ? participants
-            : allClones.slice(0, 2).map((c) => c.name.replace(/\s*\(Clone\)$/i, "")),
-      };
-    });
-
-    // ---- Build risks from conflict/risk-related facts ----
-    const riskFacts = factRows.filter((f) =>
-      /risk|blocker|problem|issue|concern|behind|slip|fail|critical|broke|revert|outage|deadline|bug/i.test(
-        f.content
-      )
-    );
-    const risks = riskFacts.slice(0, 4).map((f) => {
-      const conf = f.confidence ?? 0.5;
-      const severity: "low" | "medium" | "high" =
-        conf >= 0.85 ? "high" : conf >= 0.7 ? "medium" : "low";
-      return {
-        risk: f.content,
-        severity,
-        context: `Source: ${f.source}. Occurred ${new Date(f.occurred_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}.`,
-      };
-    });
-
-    const brief: OnboardingBrief = {
+    const base: OnboardingBrief = {
       role,
       team,
       generatedAt: new Date().toISOString(),
-      keyContext,
+      keyContext: [],
       keyPeople,
       keyDocs,
-      decisions,
-      risks,
+      decisions: [],
+      risks: [],
     };
 
-    return NextResponse.json({ brief });
+    if (docs.length === 0) {
+      base.keyContext = ["No GitHub or Jira data has been synced for this team yet. Sync the twins in Settings."];
+      return NextResponse.json({ brief: base });
+    }
+
+    const draft = await askForJson<BriefDraft>(`You are writing an onboarding brief for a new ${role} joining the ${team} team.
+Use ONLY these numbered sources (the team's real GitHub repos and Jira tickets):
+${formatDocsForPrompt(docs)}
+
+Return raw JSON:
+{
+  "keyContext": ["3-5 short sentences on what the team is working on right now"],
+  "decisions": [{ "decision": "...", "rationale": "...", "source_ids": [n] }],
+  "risks": [{ "risk": "...", "severity": "low" | "medium" | "high", "context": "...", "source_ids": [n] }]
+}
+Only include decisions and risks that are clearly visible in the sources (e.g. blocked or overdue tickets, high-priority bugs, chosen approaches in READMEs or tickets). Return empty arrays if there are none. Do not invent people, dates, or numbers.`);
+
+    base.keyContext = Array.isArray(draft.keyContext) ? draft.keyContext.filter((s) => typeof s === "string").slice(0, 5) : [];
+
+    base.decisions = (Array.isArray(draft.decisions) ? draft.decisions : []).slice(0, 5).flatMap((d) => {
+      const cited = pickDocs(docs, d?.source_ids);
+      if (!d?.decision || cited.length === 0) return [];
+      // Only name people that actually appear in the cited sources.
+      const participants = scope
+        .map((c) => c.name)
+        .filter((name) => cited.some((doc) => doc.content.includes(name)));
+      return [{
+        decision: d.decision,
+        date: formatDate(cited[0].occurredAt),
+        rationale: `${d.rationale || ""} (Source: ${cited.map((c) => c.title).join("; ")})`.trim(),
+        participants,
+      }];
+    });
+
+    base.risks = (Array.isArray(draft.risks) ? draft.risks : []).slice(0, 5).flatMap((r) => {
+      const cited = pickDocs(docs, r?.source_ids);
+      if (!r?.risk || cited.length === 0) return [];
+      const severity = r.severity === "high" || r.severity === "medium" ? r.severity : "low";
+      return [{ risk: r.risk, severity, context: `${r.context || ""} (Source: ${cited.map((c) => c.title).join("; ")})`.trim() }];
+    });
+
+    return NextResponse.json({ brief: base });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : "Unknown error";
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return NextResponse.json({ error: err instanceof Error ? err.message : "Unknown error" }, { status: 500 });
   }
 }

@@ -1,578 +1,350 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState, useCallback } from "react";
-import { useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
-import {
-  ArrowLeft,
-  RefreshCw,
-  LogIn,
-  LogOut,
-  Mail,
-  HardDrive,
-  Sparkles,
-  ExternalLink,
-  Check,
-  AlertCircle,
-  Github,
-  MessageSquare,
-  FileText,
-  Send,
-  Users,
-} from "lucide-react";
+import { ArrowLeft, Check, AlertCircle, Loader2, RefreshCw, Trash2, Plus, Send, Activity, Pencil } from "lucide-react";
+import type { Clone } from "@/lib/core/types";
 
-type Provider = "teams" | "github" | "jira" | "slack" | "notion" | "google_drive" | "email";
+type Check = { ok: boolean; detail: string };
+type Health = { ok: boolean; live: boolean; checks: Record<string, Check> };
+type SyncResult = { status: "synced" | "skipped" | "failed"; summary: string };
 
-const SYNCABLE_PROVIDERS: Provider[] = ["github", "notion", "google_drive", "jira", "slack"];
-
-const syncRoutes: Partial<Record<Provider, string>> = {
-  slack: "/api/slack/sync",
-  github: "/api/github/sync",
-  notion: "/api/notion/sync",
-  google_drive: "/api/google-drive/sync",
-  jira: "/api/jira/sync",
-  email: "/api/gmail/sync",
+const CHECK_LABELS: Record<string, string> = {
+  database: "Supabase database",
+  ragFlag: "Memory search enabled",
+  openai: "OpenAI",
+  github: "GitHub",
+  jira: "Jira",
+  teamsInbound: "Teams → twin (Power Automate)",
+  teamsOutbound: "Twin → Teams cards (optional)",
 };
 
-interface ProviderField {
-  key: string;
-  label: string;
-  type?: "text" | "password";
-  placeholder?: string;
-}
+const card =
+  "rounded-3xl border border-white/80 bg-[#f1f5fa] p-6 shadow-[6px_6px_14px_#cfd8e5,-6px_-6px_14px_#ffffff]";
+const input =
+  "w-full rounded-xl border border-[#d8e2ed] bg-[#f8fafc] px-3 py-2 text-[13px] text-slate-800 placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none";
+const primaryBtn =
+  "inline-flex items-center justify-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2 text-[12.5px] font-bold text-white hover:bg-indigo-700 disabled:opacity-50";
+const secondaryBtn =
+  "inline-flex items-center justify-center gap-1.5 rounded-xl border border-[#d8e2ed] bg-white px-3 py-2 text-[12px] font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50";
 
-interface IntegrationStatus {
-  provider: Provider;
-  updated_at: string;
-  has_config: boolean;
-  config_preview: Record<string, unknown>;
-}
-
-interface SyncFeedback {
-  success: boolean;
-  message: string;
-}
-
-const providerMeta: Record<
-  Provider,
-  { label: string; description: string; icon: React.ReactNode }
-> = {
-  teams: {
-    label: "Microsoft Teams (Personal & Work)",
-    description: "Connect your personal Microsoft account (Outlook / Gmail) or Workflows webhook for ambient twin answering.",
-    icon: <Users size={18} className="text-[#505ac9]" />,
-  },
-  github: {
-    label: "GitHub Repositories",
-    description: "Sync repositories, commits, PRs, and commit diffs for live code grounding.",
-    icon: <Github size={18} className="text-slate-800" />,
-  },
-  jira: {
-    label: "Jira Sprint Board",
-    description: "Sync agile sprints, epics, bug tracking, and release boards.",
-    icon: <ExternalLink size={18} className="text-blue-600" />,
-  },
-  slack: {
-    label: "Slack Workspace",
-    description: "Sync delivery channels and messages into organizational memory.",
-    icon: <MessageSquare size={18} className="text-emerald-600" />,
-  },
-  notion: {
-    label: "Notion & Confluence",
-    description: "Sync engineering workspace pages and design documents.",
-    icon: <FileText size={18} className="text-amber-600" />,
-  },
-  google_drive: {
-    label: "Google Workspace & M365",
-    description: "Sync cloud architecture specs and shared presentations.",
-    icon: null,
-  },
-  email: {
-    label: "Corporate Mail (IMAP / Exchange)",
-    description: "Sync relevant architecture threads into private twin context.",
-    icon: <Mail size={18} className="text-rose-600" />,
-  },
+type TwinForm = {
+  name: string;
+  owner_role: string;
+  owner_department: string;
+  owner_email: string;
+  expertise_tags: string;
+  github_username: string;
+  jira_jql: string;
 };
 
-const providerFields: Record<Provider, ProviderField[]> = {
-  teams: [
-    { key: "email", label: "Corporate / Microsoft Email", placeholder: "engineer@company.com (or Outlook/Teams)" },
-    { key: "channel", label: "Teams Channel / Chat Name", placeholder: "general or platform-delivery" },
-    { key: "webhook_url", label: "Teams Workflows Webhook URL (Power Automate)", type: "password", placeholder: "https://prod-XX.westus.logic.azure.com/workflows/..." },
-  ],
-  github: [
-    { key: "username", label: "GitHub Username / Organization", placeholder: "enterprise-org" },
-    { key: "token", label: "Personal Access Token", type: "password", placeholder: "ghp_..." },
-  ],
-  jira: [
-    { key: "base_url", label: "Base URL", placeholder: "https://your-domain.atlassian.net" },
-    { key: "email", label: "Account Email", placeholder: "you@example.com" },
-    { key: "api_token", label: "API Token", type: "password" },
-  ],
-  slack: [
-    { key: "bot_token", label: "Bot / Webhook Token", type: "password", placeholder: "xoxb-... or webhook URL" },
-  ],
-  notion: [
-    { key: "api_key", label: "API Key", type: "password", placeholder: "ntn_..." },
-  ],
-  google_drive: [],
-  email: [
-    { key: "address", label: "Email Address", placeholder: "you@example.com" },
-    { key: "app_password", label: "App Password", type: "password" },
-  ],
+const EMPTY_FORM: TwinForm = {
+  name: "",
+  owner_role: "",
+  owner_department: "",
+  owner_email: "",
+  expertise_tags: "",
+  github_username: "",
+  jira_jql: "",
 };
 
-const NON_GOOGLE_PROVIDERS: Provider[] = ["teams", "github", "jira", "slack", "notion", "email"];
-
-function formatSyncResult(result: Record<string, unknown>): string {
-  const parts: string[] = [];
-  if (typeof result.channels_scanned === "number") parts.push(`${result.channels_scanned} channels`);
-  if (typeof result.messages_fetched === "number") parts.push(`${result.messages_fetched} messages`);
-  if (typeof result.repositories_scanned === "number") parts.push(`${result.repositories_scanned} repos`);
-  if (typeof result.pages_scanned === "number") parts.push(`${result.pages_scanned} pages`);
-  if (typeof result.files_scanned === "number") parts.push(`${result.files_scanned} files`);
-  if (typeof result.documents_created === "number") parts.push(`${result.documents_created} docs`);
-  if (typeof result.chunks_created === "number") parts.push(`${result.chunks_created} chunks`);
-  return parts.length > 0 ? parts.join(", ") : "Sync complete";
+function formFromClone(c: Clone): TwinForm {
+  return {
+    name: c.name,
+    owner_role: c.owner_role ?? "",
+    owner_department: c.owner_department ?? "",
+    owner_email: c.owner_email ?? "",
+    expertise_tags: (c.expertise_tags ?? []).join(", "),
+    github_username: c.personality.sources?.github_username ?? "",
+    jira_jql: c.personality.sources?.jira_jql ?? "",
+  };
 }
 
-function GoogleLogo({ size = 18 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 48 48" className="flex-shrink-0">
-      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
-      <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
-      <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
-      <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
-    </svg>
+function TwinFields({ form, onChange }: { form: TwinForm; onChange: (f: TwinForm) => void }) {
+  const field = (key: keyof TwinForm, label: string, placeholder: string, wide = false) => (
+    <label className={wide ? "col-span-2" : ""}>
+      <span className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-500">{label}</span>
+      <input
+        className={input}
+        value={form[key]}
+        placeholder={placeholder}
+        onChange={(e) => onChange({ ...form, [key]: e.target.value })}
+      />
+    </label>
   );
-}
-
-function SettingsContent() {
-  const searchParams = useSearchParams();
-  const [formState, setFormState] = useState<Record<Provider, Record<string, string>>>({
-    teams: {}, github: {}, jira: {}, slack: {}, notion: {}, google_drive: {}, email: {},
-  });
-  const [statuses, setStatuses] = useState<Record<Provider, IntegrationStatus | null>>({
-    teams: null, github: null, jira: null, slack: null, notion: null, google_drive: null, email: null,
-  });
-  const [savingProvider, setSavingProvider] = useState<Provider | null>(null);
-  const [syncingProvider, setSyncingProvider] = useState<Provider | null>(null);
-  const [testingTeams, setTestingTeams] = useState(false);
-  const [syncFeedback, setSyncFeedback] = useState<Record<string, SyncFeedback>>({});
-  const [message, setMessage] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null);
-
-  const isGoogleOAuth = useMemo(() => {
-    const s = statuses.google_drive;
-    return s?.has_config === true && s?.config_preview?.auth_type === "oauth";
-  }, [statuses.google_drive]);
-
-  const googleEmail = useMemo(() => {
-    const s = statuses.google_drive;
-    return typeof s?.config_preview?.email === "string" ? s.config_preview.email : null;
-  }, [statuses.google_drive]);
-
-  const fetchStatuses = useCallback(async () => {
-    try {
-      const res = await fetch("/api/integrations");
-      if (res.ok) {
-        const data = await res.json();
-        const map: Record<Provider, IntegrationStatus | null> = {
-          teams: null, github: null, jira: null, slack: null, notion: null, google_drive: null, email: null,
-        };
-        const initialForm: Record<Provider, Record<string, string>> = {
-          teams: {}, github: {}, jira: {}, slack: {}, notion: {}, google_drive: {}, email: {},
-        };
-        for (const item of data.integrations as IntegrationStatus[]) {
-          map[item.provider] = item;
-          if (item.config_preview) {
-            const preview = item.config_preview as Record<string, string>;
-            for (const [k, v] of Object.entries(preview)) {
-              if (v && typeof v === "string" && !v.includes("***")) {
-                initialForm[item.provider][k] = v;
-              }
-            }
-          }
-        }
-        setStatuses(map);
-        setFormState((prev) => ({
-          ...initialForm,
-          ...prev,
-        }));
-      }
-    } catch {
-      // ignore error
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchStatuses();
-  }, [fetchStatuses]);
-
-  useEffect(() => {
-    const success = searchParams.get("success");
-    const error = searchParams.get("error");
-    if (success === "google_connected") {
-      setMessage({ text: "Google account connected successfully.", type: "success" });
-    } else if (error) {
-      setMessage({ text: `OAuth error: ${error}`, type: "error" });
-    }
-  }, [searchParams]);
-
-  const handleInputChange = (provider: Provider, key: string, val: string) => {
-    setFormState((prev) => ({
-      ...prev,
-      [provider]: { ...prev[provider], [key]: val },
-    }));
-  };
-
-  const handleSave = async (provider: Provider) => {
-    setSavingProvider(provider);
-    try {
-      const res = await fetch("/api/integrations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider, config: formState[provider] }),
-      });
-      if (res.ok) {
-        setMessage({ text: `${providerMeta[provider].label} configuration saved to PostgreSQL.`, type: "success" });
-        await fetchStatuses();
-      } else {
-        setMessage({ text: "Failed to save configuration.", type: "error" });
-      }
-    } catch {
-      setMessage({ text: "Failed to save configuration.", type: "error" });
-    }
-    setSavingProvider(null);
-  };
-
-  const handleTestTeams = async () => {
-    setTestingTeams(true);
-    try {
-      const webhookUrl = formState.teams.webhook_url;
-      const res = await fetch("/api/teams/send", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: "Hello from TwinOps! Your personal Microsoft Teams channel is connected to Sm Ali's Digital Twin.",
-          title: "TwinOps Digital Twin Connected",
-          subtitle: "Responding on behalf of Sm Ali",
-          webhookUrl: webhookUrl || undefined,
-          facts: [
-            { title: "Connected Account", value: formState.teams.email || "Personal Microsoft Account" },
-            { title: "Status", value: "Live & Active" },
-          ],
-        }),
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setSyncFeedback((prev) => ({
-          ...prev,
-          teams: { success: true, message: "Adaptive card delivered to your Teams channel successfully!" },
-        }));
-      } else {
-        setSyncFeedback((prev) => ({
-          ...prev,
-          teams: { success: false, message: data.error || "Failed to send message to Teams" },
-        }));
-      }
-    } catch {
-      setSyncFeedback((prev) => ({
-        ...prev,
-        teams: { success: false, message: "Network error sending test card to Teams" },
-      }));
-    }
-    setTestingTeams(false);
-  };
-
-  const handleSyncNow = async (provider: Provider, route?: string) => {
-    const endpoint = route || syncRoutes[provider];
-    if (!endpoint) return;
-    setSyncingProvider(provider);
-    try {
-      const res = await fetch(endpoint, { method: "POST" });
-      const data = await res.json();
-      if (res.ok) {
-        const detail = formatSyncResult(data);
-        setSyncFeedback((prev) => ({ ...prev, [provider]: { success: true, message: detail } }));
-        await fetchStatuses();
-      } else {
-        setSyncFeedback((prev) => ({ ...prev, [provider]: { success: false, message: data.error || "Sync failed" } }));
-      }
-    } catch {
-      setSyncFeedback((prev) => ({ ...prev, [provider]: { success: false, message: "Sync network error" } }));
-    }
-    setSyncingProvider(null);
-  };
-
-  const handleDisconnectGoogle = useCallback(async () => {
-    try {
-      const res = await fetch("/api/integrations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider: "google_drive", config: {} }),
-      });
-      if (res.ok) {
-        setStatuses((prev) => ({ ...prev, google_drive: null }));
-        setMessage({ text: "Google account disconnected.", type: "info" });
-      }
-    } catch {
-      setMessage({ text: "Failed to disconnect.", type: "error" });
-    }
-  }, []);
-
-  const isGoogleSyncing = syncingProvider === "google_drive";
-  const googleFeedback = syncFeedback.google_drive;
-
   return (
-    <div className="flex h-screen bg-[#eaf0f6]">
-      {/* Sidebar nav */}
-      <aside className="flex w-[260px] flex-shrink-0 flex-col border-r border-[#d8e2ed] bg-[#f1f5fa] shadow-[2px_0_8px_#cfd8e515]">
-        <div className="flex items-center gap-3 px-6 py-6">
-          <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-[#4f46e5] text-white shadow-[3px_3px_7px_#4f46e540]">
-            <Sparkles size={16} />
-          </div>
-          <div>
-            <span className="text-[15px] font-extrabold tracking-tight text-slate-800">TwinOps</span>
-            <span className="block text-[10px] font-bold text-indigo-600 uppercase tracking-wider">Enterprise Pod</span>
-          </div>
-        </div>
-        <nav className="flex-1 px-4 space-y-1">
-          <Link
-            href="/"
-            className="flex items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-[13px] font-bold text-slate-700 bg-white border border-[#e2eaf3] shadow-[2px_2px_6px_#cfd8e5,-2px_-2px_6px_#ffffff] transition-all hover:text-indigo-600"
-          >
-            <ArrowLeft size={16} className="text-slate-400" />
-            Back to Twin Portal
-          </Link>
-        </nav>
-      </aside>
-
-      {/* Main content */}
-      <main className="flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-3xl px-8 py-10 space-y-6">
-          {/* Header */}
-          <div>
-            <h1 className="text-[24px] font-extrabold tracking-tight text-slate-800">
-              Integrations & Real Database Connectors
-            </h1>
-            <p className="mt-1 text-[13.5px] font-medium text-slate-500">
-              Configure personal Microsoft Teams, GitHub, and Jira connectors. All credentials save to your real PostgreSQL database.
-            </p>
-          </div>
-
-          {/* Flash message */}
-          {message && (
-            <div
-              className={`flex items-center gap-2.5 rounded-2xl border px-4 py-3 text-[13px] font-bold shadow-[2px_2px_6px_#cfd8e5] ${
-                message.type === "success"
-                  ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-                  : message.type === "error"
-                  ? "border-rose-200 bg-rose-50 text-rose-800"
-                  : "border-slate-200 bg-white text-slate-700"
-              }`}
-            >
-              {message.type === "success" ? <Check size={15} /> : <AlertCircle size={15} />}
-              {message.text}
-              <button
-                onClick={() => setMessage(null)}
-                className="ml-auto text-current opacity-60 hover:opacity-100 font-extrabold text-base"
-              >
-                &times;
-              </button>
-            </div>
-          )}
-
-          {/* Microsoft Teams Card Highlight */}
-          <div className="rounded-3xl border border-[#d2dbfc] bg-gradient-to-br from-[#f6f8ff] to-[#eef2fc] p-6 shadow-[6px_6px_14px_#cfd8e5,-6px_-6px_14px_#ffffff]">
-            <div className="mb-4 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#505ac9] text-white shadow-[3px_3px_8px_#505ac940]">
-                  <Users size={22} />
-                </div>
-                <div>
-                  <h2 className="text-[16px] font-extrabold text-slate-800">Microsoft Teams (Personal Account)</h2>
-                  <p className="text-[12px] font-medium text-slate-500">Auto-answer mentions and sync chat context with your personal account</p>
-                </div>
-              </div>
-              <span
-                className={`rounded-full px-3 py-1 text-[11px] font-bold border ${
-                  statuses.teams?.has_config
-                    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                    : "bg-slate-100 text-slate-500 border-slate-200"
-                }`}
-              >
-                {statuses.teams?.has_config ? "Connected" : "Not Configured"}
-              </span>
-            </div>
-
-            <div className="mb-4 space-y-3">
-              {providerFields.teams.map((field) => (
-                <div key={field.key}>
-                  <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-slate-600">
-                    {field.label}
-                  </label>
-                  <input
-                    type={field.type || "text"}
-                    value={formState.teams[field.key] || ""}
-                    placeholder={field.placeholder || ""}
-                    onChange={(e) => handleInputChange("teams", field.key, e.target.value)}
-                    className="w-full rounded-xl border border-[#d8e2ed] bg-white px-4 py-2.5 text-[13px] font-medium text-slate-800 placeholder:text-slate-400 shadow-[inset_2px_2px_4px_#cfd8e5,inset_-2px_-2px_4px_#ffffff] focus:border-indigo-400 focus:outline-none"
-                  />
-                </div>
-              ))}
-            </div>
-
-            <div className="mb-4 rounded-2xl border border-indigo-100 bg-indigo-50/50 p-3.5 text-[12px] font-medium text-indigo-900 leading-relaxed">
-              <strong>💡 How to get your Teams Webhook:</strong> In your Teams channel, click <code className="bg-white px-1.5 py-0.5 rounded border border-indigo-200">···</code> &rarr; <strong>Workflows</strong> &rarr; Select <em>&ldquo;Post to a channel when a webhook request is received&rdquo;</em> &rarr; Copy the generated URL and paste it above.
-            </div>
-
-            {syncFeedback.teams && (
-              <div
-                className={`mb-4 rounded-xl border px-3.5 py-2.5 text-[12px] font-bold ${
-                  syncFeedback.teams.success
-                    ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-                    : "border-rose-200 bg-rose-50 text-rose-800"
-                }`}
-              >
-                {syncFeedback.teams.message}
-              </div>
-            )}
-
-            <div className="flex flex-wrap gap-2.5">
-              <button
-                onClick={() => handleSave("teams")}
-                disabled={savingProvider === "teams" || testingTeams}
-                className="flex items-center gap-2 rounded-xl bg-[#505ac9] px-5 py-2.5 text-[13px] font-bold text-white shadow-[4px_4px_10px_#cfd8e5,-4px_-4px_10px_#ffffff] transition-all hover:bg-[#434cb0] disabled:opacity-50"
-              >
-                {savingProvider === "teams" ? "Saving..." : "Save Teams Connector"}
-              </button>
-              <button
-                onClick={handleTestTeams}
-                disabled={savingProvider === "teams" || testingTeams}
-                className="flex items-center gap-2 rounded-xl border border-[#d8e2ed] bg-white px-4 py-2.5 text-[13px] font-bold text-slate-700 shadow-[3px_3px_7px_#cfd8e5] transition-all hover:bg-slate-50 disabled:opacity-50"
-              >
-                <Send size={14} className={testingTeams ? "animate-spin text-indigo-600" : "text-indigo-600"} />
-                {testingTeams ? "Delivering..." : "Send Test Card to Teams"}
-              </button>
-            </div>
-          </div>
-
-          {/* Other Integrations */}
-          <div>
-            <h2 className="text-[16px] font-bold text-slate-800">Pod Connectors & Dev Ecosystem</h2>
-            <p className="mt-0.5 text-[12.5px] font-medium text-slate-500">
-              Configure credentials to ingest commit diffs, sprint boards, and Slack threads.
-            </p>
-          </div>
-
-          <div className="space-y-4">
-            {NON_GOOGLE_PROVIDERS.filter((p) => p !== "teams").map((provider) => {
-              const meta = providerMeta[provider];
-              const fields = providerFields[provider];
-              const status = statuses[provider];
-              const feedback = syncFeedback[provider];
-              const isSyncable = SYNCABLE_PROVIDERS.includes(provider);
-              const isSyncing = syncingProvider === provider;
-              const isSaving = savingProvider === provider;
-
-              return (
-                <div
-                  key={provider}
-                  className="rounded-3xl border border-[#e2eaf3] bg-[#f1f5fa] p-6 shadow-[6px_6px_14px_#cfd8e5,-6px_-6px_14px_#ffffff]"
-                >
-                  <div className="mb-4 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-white border border-[#e2eaf3] shadow-[2px_2px_5px_#cfd8e5]">
-                        {meta.icon}
-                      </div>
-                      <div>
-                        <h3 className="text-[14.5px] font-bold text-slate-800">{meta.label}</h3>
-                        <p className="text-[12px] font-medium text-slate-500">{meta.description}</p>
-                      </div>
-                    </div>
-                    <span
-                      className={`rounded-full px-3 py-0.5 text-[10.5px] font-bold border ${
-                        status?.has_config
-                          ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                          : "bg-slate-100 text-slate-400 border-slate-200"
-                      }`}
-                    >
-                      {status?.has_config ? "Connected" : "Not Configured"}
-                    </span>
-                  </div>
-
-                  {fields.length > 0 && (
-                    <div className="mb-4 space-y-3">
-                      {fields.map((field) => (
-                        <div key={field.key}>
-                          <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                            {field.label}
-                          </label>
-                          <input
-                            type={field.type || "text"}
-                            value={formState[provider][field.key] || ""}
-                            placeholder={field.placeholder || ""}
-                            onChange={(e) => handleInputChange(provider, field.key, e.target.value)}
-                            className="w-full rounded-xl border border-[#d8e2ed] bg-[#f1f5fa] px-4 py-2.5 text-[13px] font-medium text-slate-800 placeholder:text-slate-400 shadow-[inset_2px_2px_4px_#cfd8e5,inset_-2px_-2px_4px_#ffffff] focus:border-indigo-400 focus:outline-none"
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {feedback && (
-                    <div
-                      className={`mb-4 rounded-xl border px-3.5 py-2.5 text-[12px] font-bold ${
-                        feedback.success
-                          ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-                          : "border-rose-200 bg-rose-50 text-rose-800"
-                      }`}
-                    >
-                      {feedback.message}
-                    </div>
-                  )}
-
-                  <div className="flex gap-2.5">
-                    {fields.length > 0 && (
-                      <button
-                        onClick={() => handleSave(provider)}
-                        disabled={isSaving || isSyncing}
-                        className="flex items-center gap-2 rounded-xl bg-[#4f46e5] px-5 py-2.5 text-[13px] font-bold text-white shadow-[4px_4px_10px_#cfd8e5,-4px_-4px_10px_#ffffff] transition-all hover:bg-indigo-700 disabled:opacity-50"
-                      >
-                        {isSaving ? "Saving..." : `Save Configuration`}
-                      </button>
-                    )}
-                    {isSyncable && status?.has_config && (
-                      <button
-                        onClick={() => handleSyncNow(provider)}
-                        disabled={isSaving || isSyncing}
-                        className="flex items-center gap-2 rounded-xl border border-[#e2eaf3] bg-white px-4 py-2.5 text-[13px] font-bold text-slate-700 shadow-[3px_3px_7px_#cfd8e5] transition-all hover:bg-slate-50 disabled:opacity-50"
-                      >
-                        <RefreshCw size={14} className={isSyncing ? "animate-spin" : ""} />
-                        {isSyncing ? "Syncing..." : "Sync Live Data"}
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </main>
+    <div className="grid grid-cols-2 gap-3">
+      {field("name", "Name *", "Syed Ali")}
+      {field("owner_email", "Email", "syed.ali@company.com")}
+      {field("owner_role", "Role", "Backend Engineer")}
+      {field("owner_department", "Team", "Platform")}
+      {field("expertise_tags", "Expertise (comma-separated)", "backend, database, api", true)}
+      {field("github_username", "GitHub username", "your-github-login")}
+      {field("jira_jql", "Jira filter (JQL)", 'assignee = "you@company.com" ORDER BY updated DESC')}
     </div>
   );
 }
 
 export default function SettingsPage() {
+  const [health, setHealth] = useState<Health | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [twins, setTwins] = useState<Clone[]>([]);
+  const [loadingTwins, setLoadingTwins] = useState(true);
+  const [newTwin, setNewTwin] = useState<TwinForm>(EMPTY_FORM);
+  const [editing, setEditing] = useState<{ id: string; form: TwinForm } | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [syncResults, setSyncResults] = useState<Record<string, { github: SyncResult; jira: SyncResult } | string>>({});
+  const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
+  const [teamsTest, setTeamsTest] = useState<string | null>(null);
+  const [origin, setOrigin] = useState("");
+
+  const runHealth = useCallback(async (live: boolean) => {
+    setChecking(true);
+    try {
+      const res = await fetch(`/api/health${live ? "?live=1" : ""}`);
+      setHealth(await res.json());
+    } catch {
+      setHealth(null);
+    } finally {
+      setChecking(false);
+    }
+  }, []);
+
+  const loadTwins = useCallback(async () => {
+    setLoadingTwins(true);
+    try {
+      const res = await fetch("/api/clones");
+      const data = await res.json();
+      setTwins(data.clones ?? []);
+    } finally {
+      setLoadingTwins(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    setOrigin(window.location.origin);
+    runHealth(false);
+    loadTwins();
+  }, [runHealth, loadTwins]);
+
+  const saveTwin = async (form: TwinForm, id?: string) => {
+    setMessage(null);
+    const res = await fetch(id ? `/api/clones/${id}` : "/api/clones", {
+      method: id ? "PATCH" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(form),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setMessage({ text: data.error || "Could not save twin", ok: false });
+      return false;
+    }
+    setMessage({ text: id ? `Saved ${form.name}.` : `Created ${form.name}'s twin. Click Sync to load their data.`, ok: true });
+    await loadTwins();
+    runHealth(false);
+    return true;
+  };
+
+  const handleCreate = async (e: FormEvent) => {
+    e.preventDefault();
+    if (await saveTwin(newTwin)) setNewTwin(EMPTY_FORM);
+  };
+
+  const handleSync = async (twin: Clone) => {
+    setBusyId(twin.id);
+    setSyncResults((prev) => ({ ...prev, [twin.id]: "Syncing GitHub and Jira… (can take a minute)" }));
+    try {
+      const res = await fetch(`/api/clones/${twin.id}/sync`, { method: "POST" });
+      const data = await res.json();
+      setSyncResults((prev) => ({ ...prev, [twin.id]: data.results ?? data.error ?? "Sync failed" }));
+      await loadTwins();
+      runHealth(false);
+    } catch {
+      setSyncResults((prev) => ({ ...prev, [twin.id]: "Sync failed: server not reachable" }));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleDelete = async (twin: Clone) => {
+    if (!window.confirm(`Delete ${twin.name}'s twin and all of its synced memory?`)) return;
+    setBusyId(twin.id);
+    await fetch(`/api/clones/${twin.id}`, { method: "DELETE" });
+    setBusyId(null);
+    await loadTwins();
+    runHealth(false);
+  };
+
+  const handleTeamsTest = async () => {
+    setTeamsTest("Sending…");
+    const res = await fetch("/api/teams/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: "TwinOps connected",
+        text: `TwinOps can post to this channel. ${twins.length} twin(s) are set up.`,
+      }),
+    });
+    const data = await res.json();
+    setTeamsTest(res.ok ? "Card delivered to Teams." : data.error || "Failed to send");
+  };
+
   return (
-    <Suspense
-      fallback={
-        <div className="flex h-screen items-center justify-center bg-[#eaf0f6]">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-600 border-t-transparent" />
+    <div className="mx-auto max-w-4xl space-y-6 px-6 py-8">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-extrabold text-slate-800">Twins &amp; integrations</h1>
+          <p className="text-sm text-slate-500">Create a twin for each real person, then sync their GitHub and Jira work.</p>
         </div>
-      }
-    >
-      <SettingsContent />
-    </Suspense>
+        <Link href="/" className={secondaryBtn}>
+          <ArrowLeft size={14} /> Back
+        </Link>
+      </div>
+
+      {/* Connection status */}
+      <section className={card}>
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-[15px] font-bold text-slate-800">
+            <Activity size={16} className="text-indigo-600" /> Connection status
+          </h2>
+          <button className={primaryBtn} onClick={() => runHealth(true)} disabled={checking}>
+            {checking ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+            Test live connections
+          </button>
+        </div>
+        {!health && <p className="text-sm text-slate-500">Checking…</p>}
+        {health && (
+          <ul className="space-y-2">
+            {Object.entries(health.checks).map(([key, c]) => (
+              <li key={key} className="flex items-start gap-2 text-[13px]">
+                {c.ok ? (
+                  <Check size={16} className="mt-0.5 flex-shrink-0 text-emerald-600" />
+                ) : (
+                  <AlertCircle size={16} className="mt-0.5 flex-shrink-0 text-rose-500" />
+                )}
+                <span className="font-semibold text-slate-700">{CHECK_LABELS[key] ?? key}:</span>
+                <span className="text-slate-600">{c.detail}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="mt-3 text-[11.5px] text-slate-500">
+          Keys live in <code>.env.local</code> on the server and are never shown here.
+          {health && !health.live && " Click “Test live connections” to verify each key with a real call."}
+        </p>
+      </section>
+
+      {/* Twins */}
+      <section className={card}>
+        <h2 className="mb-4 text-[15px] font-bold text-slate-800">Twins</h2>
+        {message && (
+          <p className={`mb-3 text-[13px] font-semibold ${message.ok ? "text-emerald-700" : "text-rose-600"}`}>{message.text}</p>
+        )}
+        {loadingTwins ? (
+          <Loader2 size={18} className="animate-spin text-indigo-500" />
+        ) : twins.length === 0 ? (
+          <p className="mb-4 text-sm text-slate-500">No twins yet. Add yourself first, then your teammates.</p>
+        ) : (
+          <div className="mb-6 space-y-3">
+            {twins.map((t) => {
+              const result = syncResults[t.id];
+              const isEditing = editing?.id === t.id;
+              return (
+                <div key={t.id} className="rounded-2xl border border-[#e2eaf3] bg-white p-4">
+                  {isEditing ? (
+                    <div className="space-y-3">
+                      <TwinFields form={editing.form} onChange={(form) => setEditing({ id: t.id, form })} />
+                      <div className="flex gap-2">
+                        <button
+                          className={primaryBtn}
+                          onClick={async () => (await saveTwin(editing.form, t.id)) && setEditing(null)}
+                        >
+                          Save
+                        </button>
+                        <button className={secondaryBtn} onClick={() => setEditing(null)}>
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-[14px] font-bold text-slate-800">{t.name}</p>
+                          <p className="text-[12px] text-slate-500">
+                            {[t.owner_role, t.owner_department, t.owner_email].filter(Boolean).join(" · ") || "No role set"}
+                          </p>
+                          <p className="mt-1 text-[12px] text-slate-600">
+                            GitHub: <b>{t.personality.sources?.github_username || "not set"}</b> · Jira:{" "}
+                            <b>{t.personality.sources?.jira_jql || "not set"}</b>
+                          </p>
+                          <p className="text-[11.5px] text-slate-400">
+                            {t.trained_at ? `Last synced ${new Date(t.trained_at).toLocaleString()}` : "Never synced"}
+                          </p>
+                        </div>
+                        <div className="flex flex-shrink-0 gap-2">
+                          <button className={primaryBtn} onClick={() => handleSync(t)} disabled={busyId === t.id}>
+                            <RefreshCw size={13} className={busyId === t.id ? "animate-spin" : ""} /> Sync
+                          </button>
+                          <button className={secondaryBtn} onClick={() => setEditing({ id: t.id, form: formFromClone(t) })}>
+                            <Pencil size={13} />
+                          </button>
+                          <button className={secondaryBtn} onClick={() => handleDelete(t)} disabled={busyId === t.id}>
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      </div>
+                      {result && (
+                        <div className="mt-2 rounded-xl bg-[#f1f5fa] px-3 py-2 text-[12px] text-slate-700">
+                          {typeof result === "string" ? (
+                            result
+                          ) : (
+                            <>
+                              <p>
+                                <b>GitHub</b> ({result.github.status}): {result.github.summary}
+                              </p>
+                              <p>
+                                <b>Jira</b> ({result.jira.status}): {result.jira.summary}
+                              </p>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <form onSubmit={handleCreate} className="space-y-3 rounded-2xl border border-dashed border-[#c9d5e3] p-4">
+          <p className="text-[13px] font-bold text-slate-700">Add a twin</p>
+          <TwinFields form={newTwin} onChange={setNewTwin} />
+          <button type="submit" className={primaryBtn} disabled={!newTwin.name.trim()}>
+            <Plus size={14} /> Create twin
+          </button>
+        </form>
+      </section>
+
+      {/* Teams */}
+      <section className={card}>
+        <h2 className="mb-2 text-[15px] font-bold text-slate-800">Microsoft Teams</h2>
+        <p className="mb-2 text-[13px] text-slate-600">
+          Your Power Automate flow should POST to this endpoint with the <code>x-twinops-secret</code> header
+          (setup steps in <code>docs/integrations.md</code>):
+        </p>
+        <code className="mb-3 block rounded-xl bg-white px-3 py-2 text-[12.5px] text-slate-800">
+          {origin ? `${origin}/api/teams/events` : "/api/teams/events"}
+        </code>
+        <p className="mb-3 text-[12px] text-slate-500">
+          Teams can&apos;t reach <code>localhost</code>. Use the public tunnel or deployed URL in the flow instead.
+        </p>
+        <button className={secondaryBtn} onClick={handleTeamsTest}>
+          <Send size={13} /> Send a test card to Teams
+        </button>
+        {teamsTest && <p className="mt-2 text-[12.5px] text-slate-700">{teamsTest}</p>}
+      </section>
+    </div>
   );
 }

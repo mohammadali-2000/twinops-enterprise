@@ -192,14 +192,14 @@ TwinOps requires configuration via environment variables. Copy `.env.example` to
 | `OPENAI_API_KEY` | OpenAI API Key or Azure OpenAI Key | Yes | `sk-proj-...` |
 | `OPENAI_MODEL` | Default model identifier | No | `gpt-4o` |
 | `TEAMS_WEBHOOK_URL` | Microsoft Teams Power Automate Webhook | No | `https://prod-01.westus.logic.azure.com/...` |
-| `GITHUB_ACCESS_TOKEN` | GitHub Personal Access Token | No | `ghp_...` |
-| `GITHUB_REPO_OWNER` | Default GitHub organization or username | No | `enterprise-org` |
-| `GITHUB_REPO_NAME` | Default GitHub repository name | No | `platform-core` |
-| `JIRA_HOST` | Atlassian Jira domain | No | `company.atlassian.net` |
+| `USE_SUPABASE_MEMORY` | Enables RAG retrieval for the agent | Yes | `true` |
+| `GITHUB_TOKEN` | GitHub Personal Access Token | No | `github_pat_...` |
+| `JIRA_BASE_URL` | Atlassian Jira site URL (https) | No | `https://company.atlassian.net` |
 | `JIRA_EMAIL` | Service account email for Jira API | No | `svc-twinops@company.com` |
 | `JIRA_API_TOKEN` | Jira Cloud API Token | No | `ATATT3xFfGF0...` |
 | `SLACK_BOT_TOKEN` | Slack Bot User OAuth Token | No | `xoxb-...` |
 | `SLACK_SIGNING_SECRET` | Slack Webhook Signing Secret | No | `9a8b7c6d...` |
+| `TEAMS_FLOW_SECRET` | Shared secret for the Power Automate flow calling `/api/teams/events` | No | `3f9c...` |
 
 ---
 

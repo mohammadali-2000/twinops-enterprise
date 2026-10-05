@@ -212,38 +212,18 @@ export async function buildUserGitHubContext(opts: {
   const repoLimit = Math.min(Math.max(opts.repoLimit ?? 10, 1), 100);
   const itemsPerRepo = Math.min(Math.max(opts.itemsPerRepo ?? 10, 1), 100);
 
-  let repos: GitHubRepoSummary[] = [];
-  try {
-    repos = await getUserRepos(opts.username, repoLimit);
-  } catch (err) {
-    console.warn("GitHub fetch error or rate limit, falling back to primary repos:", err);
-    repos = [
-      {
-        id: 1,
-        name: "twinops-enterprise",
-        full_name: `${opts.username}/twinops-enterprise`,
-        private: false,
-        description: "Autonomous Enterprise Digital Twins Living in Microsoft Teams, Slack & Pod Memory",
-        default_branch: "main",
-        stargazers_count: 1,
-        forks_count: 0,
-        open_issues_count: 0,
-        updated_at: new Date().toISOString(),
-        html_url: `https://github.com/${opts.username}/twinops-enterprise`,
-      },
-    ];
-  }
+  const repos = await getUserRepos(opts.username, repoLimit);
 
   const repositories: GitHubRepositoryContext[] = await Promise.all(
     repos.map(async (repo) => {
-      let languages: string[] = ["TypeScript", "JavaScript"];
-      let readme: string | null = "TwinOps Enterprise - Autonomous Workplace Digital Twins";
+      let languages: string[] = [];
+      let readme: string | null = null;
       let recentCommits: GitHubCommitSummary[] = [];
       let recentPullRequests: GitHubPullRequestSummary[] = [];
 
       try {
         const [langRes, readmeRes, commitsRes, prsRes] = await Promise.all([
-          getRepositoryLanguages(opts.username, repo.name).catch(() => ["TypeScript"]),
+          getRepositoryLanguages(opts.username, repo.name).catch(() => []),
           getRepositoryReadme(opts.username, repo.name).catch(() => null),
           getMostRecentCommits(opts.username, repo.name, {
             limit: itemsPerRepo,
@@ -296,7 +276,7 @@ export async function buildUserGitHubContext(opts: {
 function buildRepositorySnapshotDocument(
   username: string,
   repository: GitHubRepositoryContext
-): { title: string; content: string } {
+): { title: string; content: string; url: string; repo: string } {
   const commitLines =
     repository.recent_commits.length > 0
       ? repository.recent_commits
@@ -347,6 +327,8 @@ ${prLines}
   return {
     title: `GitHub Snapshot: ${repository.repo.full_name}`,
     content,
+    url: repository.repo.html_url,
+    repo: repository.repo.full_name,
   };
 }
 
@@ -366,18 +348,21 @@ export async function syncGitHubContextToSupabase(opts: {
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!supabaseUrl || !supabaseKey) {
-    const repositoryDocs = context.repositories.map((repository) =>
-      buildRepositorySnapshotDocument(opts.username, repository)
-    );
-    return {
-      snapshot_id: `local_gh_${Date.now()}`,
-      repositories_scanned: context.repositories_scanned,
-      documents_created: repositoryDocs.length,
-      chunks_created: repositoryDocs.length * 2,
-    };
+    throw new Error("Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.");
   }
 
   const supabase = createServerSupabaseClient();
+  // Replace this user's previous GitHub sync instead of piling up duplicates.
+  const { error: deleteError } = await supabase
+    .from("memories")
+    .delete()
+    .eq("clone_id", opts.cloneId)
+    .eq("source", "github")
+    .eq("metadata->>github_username", opts.username);
+  if (deleteError) {
+    throw new Error(`Old GitHub rows could not be replaced: ${deleteError.message}`);
+  }
+
   const now = new Date().toISOString();
 
   let snapshotId = `snap_local_${Date.now()}`;
@@ -433,7 +418,7 @@ export async function syncGitHubContextToSupabase(opts: {
       source: "github",
       content: doc.content,
       confidence: 0.9,
-      metadata: { title: doc.title, doc_type: "document", snapshot_id: snapshotId, github_username: opts.username },
+      metadata: { source: "github", title: doc.title, doc_type: "document", snapshot_id: snapshotId, github_username: opts.username, repo: doc.repo, url: doc.url },
       occurred_at: now,
     });
 
@@ -448,6 +433,9 @@ export async function syncGitHubContextToSupabase(opts: {
           confidence: 0.8,
           metadata: {
             ...chunk.metadata,
+            source: "github",
+            repo: doc.repo,
+            url: doc.url,
             source_type: "repository_snapshot",
             github_username: opts.username,
             snapshot_id: snapshotId,
@@ -460,36 +448,17 @@ export async function syncGitHubContextToSupabase(opts: {
     }
   }
 
-  // Generate embeddings for chunks
   const chunkRows = memoryRows.filter((r) => r.type === "chunk");
-  try {
-    if (chunkRows.length > 0) {
-      const embeddings = await generateEmbeddings(chunkRows.map((r) => r.content));
-      let embIdx = 0;
-      for (const row of memoryRows) {
-        if (row.type === "chunk" && embIdx < embeddings.length) {
-          (row as Record<string, unknown>).embedding = JSON.stringify(embeddings[embIdx]);
-          embIdx++;
-        }
-      }
-    }
-  } catch (embErr) {
-    console.warn("[github-sync] Embedding generation failed, saving without embeddings:", embErr);
+  if (chunkRows.length > 0) {
+    const embeddings = await generateEmbeddings(chunkRows.map((r) => r.content));
+    chunkRows.forEach((row, i) => {
+      (row as Record<string, unknown>).embedding = JSON.stringify(embeddings[i]);
+    });
   }
 
-  if (memoryRows.length > 0) {
-    // Supabase is the source of truth when it is configured. Do not report a
-    // successful enterprise sync if the shared database write has failed.
-    if (supabaseUrl && supabaseKey) {
-      const { error } = await supabase.from("memories").insert(memoryRows);
-      if (error) {
-        throw new Error(`GitHub context could not be saved to Supabase: ${error.message}`);
-      }
-    } else {
-      // Local fallback when no shared database was configured.
-      const { saveLocalMemories } = await import("@backend/memory/local-store");
-      saveLocalMemories(memoryRows as unknown as Parameters<typeof saveLocalMemories>[0]);
-    }
+  const { error } = await supabase.from("memories").insert(memoryRows);
+  if (error) {
+    throw new Error(`GitHub context could not be saved to Supabase: ${error.message}`);
   }
 
   return {

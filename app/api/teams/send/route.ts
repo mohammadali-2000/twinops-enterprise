@@ -14,17 +14,38 @@ import { sendTeamsAdaptiveCard, TeamsAdaptiveCardOptions } from "@/lib/integrati
  *   "title": "Optional card title",
  *   "subtitle": "Optional subtitle",
  *   "webhookUrl": "Optional override, otherwise uses TEAMS_WEBHOOK_URL env/db",
- *   "facts": [{ "title": "Jira", "value": "HLS-402" }],
+ *   "facts": [{ "title": "Jira", "value": "KAN-1" }],
  *   "actions": [{ "title": "Open Dashboard", "url": "https://..." }]
  * }
  */
+const ALLOWED_WEBHOOK_HOST_SUFFIXES = [
+  ".logic.azure.com",
+  ".powerplatform.com",
+  ".powerautomate.com",
+  ".webhook.office.com",
+];
+
+// Body-supplied URLs are restricted to Microsoft webhook hosts so this route can't be used for SSRF.
+function isMicrosoftWebhookUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" &&
+      ALLOWED_WEBHOOK_HOST_SUFFIXES.some((suffix) => url.hostname.endsWith(suffix))
+    );
+  } catch {
+    return false;
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const {
       text,
       title = "TwinOps Enterprise | Digital Twin",
-      subtitle = "Responding on behalf of Sm Ali",
+      subtitle = "TwinOps digital twin",
       webhookUrl: overrideUrl,
       facts = [],
       actions = [],
@@ -34,6 +55,13 @@ export async function POST(request: NextRequest) {
     if (!text || typeof text !== "string") {
       return NextResponse.json(
         { error: "Field 'text' is required and must be a string" },
+        { status: 400 }
+      );
+    }
+
+    if (overrideUrl !== undefined && !isMicrosoftWebhookUrl(overrideUrl)) {
+      return NextResponse.json(
+        { error: "webhookUrl must be an https Power Automate / Teams webhook URL" },
         { status: 400 }
       );
     }

@@ -161,14 +161,14 @@ export function SlackSimulatorView() {
       const res = await fetch("/api/github/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: "enterprise-twinops", repoLimit: 3, itemsPerRepo: 5 }),
+        body: JSON.stringify({ repoLimit: 3, itemsPerRepo: 5 }),
       });
       const data = await res.json();
       if (data.success) {
         setSyncStatus(`✓ Synced ${data.result.repositories_scanned} repos & ${data.result.chunks_created} real chunks!`);
         setTimeout(() => setSyncStatus(null), 4000);
       } else {
-        setSyncStatus("Sync finished with local fallback.");
+        setSyncStatus(`Sync failed: ${data.error ?? "unknown error"}`);
         setTimeout(() => setSyncStatus(null), 4000);
       }
     } catch {
@@ -201,7 +201,7 @@ export function SlackSimulatorView() {
     setIsTyping(true);
 
     // Target digital twin identification
-    const cloneId = "f1d2e3b4-5a6c-7d8e-9f0a-1b2c3d4e5f6a";
+    const cloneId = "auto";
     let targetName = "Sm Ali";
     let presenceKey = "ali";
 
@@ -277,12 +277,10 @@ export function SlackSimulatorView() {
         avatar: targetInitials,
         role: `On behalf of ${targetName} (In Deep Focus / Away)`,
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        content: botText || `Hey! ${targetName} is currently away in a sprint meeting, but per recent commit and architecture logs, here is the answer.`,
+        content: botText || "The twin returned an empty response.",
         isBot: true,
         botFor: targetName,
-        citations: citations.length > 0 ? citations : [
-          { source: "github:enterprise-twinops/twinops-core", snippet: "Synced commit history and architecture specifications." },
-        ],
+        citations,
       };
 
       setMessages((prev) => ({
@@ -296,12 +294,10 @@ export function SlackSimulatorView() {
         avatar: targetInitials,
         role: `On behalf of ${targetName} (Away)`,
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        content: `Hey! ${targetName} is currently in a meeting. Per latest commits on GitHub, the services are actively synced and ready for testing.`,
+        content: "Could not reach the TwinOps chat API. Check that the server is running and configured.",
         isBot: true,
         botFor: targetName,
-        citations: [
-          { source: "github:enterprise-twinops/twinops-core", snippet: "Repository commit & PR diff groundings." },
-        ],
+        citations: [],
       };
       setMessages((prev) => ({
         ...prev,

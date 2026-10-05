@@ -155,6 +155,9 @@ export interface CloneProfile {
   personality: string;
   expertise: string[];
   suggestedQuestions: string[];
+  status: "untrained" | "training" | "active" | "inactive";
+  /** ISO time of the last successful GitHub/Jira sync, if any. */
+  trainedAt: string | null;
 }
 
 export interface ChatMessage {

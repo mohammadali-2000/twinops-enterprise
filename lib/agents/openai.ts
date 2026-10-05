@@ -13,6 +13,15 @@ function getOpenAIClient(): OpenAI {
 
 export default getOpenAIClient;
 
+export function getChatModel(): string {
+  return process.env.OPENAI_MODEL || "gpt-4o";
+}
+
+// OpenRouter needs the provider prefix ("openai/text-embedding-3-small"); the model must output 1536 dims.
+function getEmbeddingModel(): string {
+  return process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small";
+}
+
 export async function transcribeAudio(audioInput: File | Buffer): Promise<string> {
   const openai = getOpenAIClient();
 
@@ -58,7 +67,7 @@ export async function synthesizeSpeech(text: string): Promise<Uint8Array> {
 export async function generateEmbedding(text: string): Promise<number[]> {
   const openai = getOpenAIClient();
   const response = await openai.embeddings.create({
-    model: "text-embedding-3-small",
+    model: getEmbeddingModel(),
     input: text,
   });
   return response.data[0].embedding;
@@ -79,7 +88,7 @@ export async function generateEmbeddings(texts: string[]): Promise<number[][]> {
   for (let i = 0; i < texts.length; i += BATCH_SIZE) {
     const batch = texts.slice(i, i + BATCH_SIZE);
     const response = await openai.embeddings.create({
-      model: "text-embedding-3-small",
+      model: getEmbeddingModel(),
       input: batch,
     });
     // OpenAI returns embeddings in order of input index

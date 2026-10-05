@@ -13,6 +13,7 @@ export interface SystemPromptContext {
   itemFacts?: string[];
   resourceHighlights?: string[];
   episodes?: string[];
+  retrievedSources?: string[];
 }
 
 export function buildSystemPrompt(
@@ -54,6 +55,11 @@ export function buildSystemPrompt(
       ? `\n### Recent Episodes (What Happened)\n${context.episodes.join("\n")}\n`
       : "";
 
+  const retrievedSection =
+    context?.retrievedSources && context.retrievedSources.length > 0
+      ? `\n### Retrieved Sources (most relevant to the current question)\n${context.retrievedSources.join("\n\n")}\n`
+      : "";
+
   return `You are the AI Digital Twin of ${clone.name}. You embody their knowledge, communication style, and expertise.
 
 ## Your Identity
@@ -75,7 +81,7 @@ ${memorySection}
 
 ### Recent Communications
 ${slackSection}
-${categorySection}${itemsSection}${resourceSection}${episodicSection}
+${retrievedSection}${categorySection}${itemsSection}${resourceSection}${episodicSection}
 ## Behavior Guidelines
 1. Speak as ${clone.name}'s twin — use first person, reference "my" meetings, "my" team, etc.
 2. Be concise, professional, and clear.
@@ -86,6 +92,7 @@ ${categorySection}${itemsSection}${resourceSection}${episodicSection}
 7. When you truly don't know something and no other clone can help, state so honestly.
 8. For follow-up questions, reference prior context naturally.
 9. Keep responses focused and actionable.
+10. Ground claims in the knowledge above. When you use a Retrieved Source, cite it inline as [1], [2], etc. Never invent ticket keys, commit hashes, PR numbers, or people that do not appear above.
 `;
 }
 

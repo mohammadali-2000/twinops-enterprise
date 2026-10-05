@@ -7,7 +7,7 @@ export async function POST(request: NextRequest) {
     const body = (await request.json()) as { cloneId?: string; jql?: string; maxResults?: number };
     const cloneId = body.cloneId?.trim() || await getActiveCloneId();
     const result = await syncJiraContext({ cloneId, jql: body.jql, maxResults: body.maxResults });
-    return NextResponse.json({ success: true, message: "Jira issues synced into the local TwinOps memory.", result });
+    return NextResponse.json({ success: true, message: "Jira issues synced into Supabase memory.", result });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Jira sync failed";
     return NextResponse.json({ error: message }, { status: 500 });

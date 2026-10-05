@@ -5,7 +5,7 @@ import { getActiveCloneId } from "@/lib/integrations/credentials";
 /**
  * GET /api/memory/recent?cloneId=<uuid>&limit=20&since=<ISO_timestamp>
  *
- * Returns the most recent fact memories for a specific clone from Supabase.
+ * Returns the most recent document and fact memories for a specific clone from Supabase.
  * If cloneId is not provided, falls back to the active clone.
  * Used by the Continual Learning panel to poll for new entries
  * from any source (chat, Slack webhook, integration sync, etc.).
@@ -34,7 +34,7 @@ export async function GET(request: NextRequest) {
       .from("memories")
       .select("id, content, source, confidence, metadata, created_at")
       .eq("clone_id", cloneId)
-      .eq("type", "fact")
+      .in("type", ["document", "fact"])
       .order("created_at", { ascending: false })
       .limit(limit);
 

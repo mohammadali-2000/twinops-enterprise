@@ -226,10 +226,10 @@ function TypingIndicator({
 // ============================================
 
 interface ClonesViewProps {
-  demoTrigger: number;
+  demoTrigger?: number;
 }
 
-export function ClonesView({ demoTrigger }: ClonesViewProps) {
+export function ClonesView({ demoTrigger = 0 }: ClonesViewProps) {
   const [profiles, setProfiles] = useState<CloneProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string>("");
@@ -471,7 +471,9 @@ export function ClonesView({ demoTrigger }: ClonesViewProps) {
                     </h3>
                     <span className="flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 text-[10.5px] font-bold text-emerald-700 shadow-[1px_1px_3px_#cfd8e5]">
                       <Bot size={11} />
-                      AI Twin Active
+                      {selectedProfile.trainedAt
+                        ? `Synced ${new Date(selectedProfile.trainedAt).toLocaleDateString()}`
+                        : "Not synced yet"}
                     </span>
                   </div>
                   <p className="text-[12px] font-medium text-slate-500">
