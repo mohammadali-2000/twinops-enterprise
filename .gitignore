@@ -48,3 +48,10 @@ yarn-error.log*
 
 # brag launch video output
 brag-output*/
+
+# Local tool installs, not project code
+/gstack/
+/.claude/
+/.agents/
+/.archify/
+skills-lock.json
