@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getTeamsWebhookUrl } from "@/lib/integrations/credentials";
 import { sendTeamsAdaptiveCard, TeamsAdaptiveCardOptions } from "@/lib/integrations/teams";
+import { isMicrosoftWebhookUrl } from "@/lib/integrations/url-safety";
 
 /**
  * POST /api/teams/send
@@ -18,27 +19,6 @@ import { sendTeamsAdaptiveCard, TeamsAdaptiveCardOptions } from "@/lib/integrati
  *   "actions": [{ "title": "Open Dashboard", "url": "https://..." }]
  * }
  */
-const ALLOWED_WEBHOOK_HOST_SUFFIXES = [
-  ".logic.azure.com",
-  ".powerplatform.com",
-  ".powerautomate.com",
-  ".webhook.office.com",
-];
-
-// Body-supplied URLs are restricted to Microsoft webhook hosts so this route can't be used for SSRF.
-function isMicrosoftWebhookUrl(value: unknown): value is string {
-  if (typeof value !== "string") return false;
-  try {
-    const url = new URL(value);
-    return (
-      url.protocol === "https:" &&
-      ALLOWED_WEBHOOK_HOST_SUFFIXES.some((suffix) => url.hostname.endsWith(suffix))
-    );
-  } catch {
-    return false;
-  }
-}
-
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();

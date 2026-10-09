@@ -6,6 +6,7 @@ import { syncNotionContextToSupabase } from "@/lib/integrations/notion";
 import { syncGoogleDriveContextToSupabase, syncGmailToSupabase } from "@/lib/integrations/google";
 import { syncSlackContextToSupabase } from "@/lib/integrations/slack";
 import { syncJiraContext } from "@/lib/integrations/jira";
+import { isSafeExternalUrl, isMicrosoftWebhookUrl } from "@/lib/integrations/url-safety";
 
 type IntegrationProvider =
   | "slack"
@@ -121,6 +122,21 @@ export async function POST(request: NextRequest) {
   if (!body.config || typeof body.config !== "object") {
     return NextResponse.json(
       { error: "config must be a JSON object" },
+      { status: 400 }
+    );
+  }
+
+  // Reject unsafe URLs before they ever reach storage, so a saved row can never
+  // be used later to make the server fetch an internal/local address (SSRF).
+  if (body.provider === "jira" && body.config.base_url !== undefined && !isSafeExternalUrl(body.config.base_url)) {
+    return NextResponse.json(
+      { error: "Jira base_url must be an https address on the public internet, not a local or internal address." },
+      { status: 400 }
+    );
+  }
+  if (body.provider === "teams" && body.config.webhook_url !== undefined && !isMicrosoftWebhookUrl(body.config.webhook_url)) {
+    return NextResponse.json(
+      { error: "Teams webhook_url must be an https Power Automate / Teams webhook URL." },
       { status: 400 }
     );
   }

@@ -1,4 +1,5 @@
 import { createServerSupabaseClient } from "@/lib/core/supabase/server";
+import { isSafeExternalUrl, isMicrosoftWebhookUrl } from "./url-safety";
 
 type IntegrationProvider =
   | "slack"
@@ -192,15 +193,14 @@ export async function getSlackBotToken(): Promise<string> {
 
 export async function getTeamsWebhookUrl(): Promise<string | null> {
   const config = await getIntegrationConfig("teams");
-  if (
-    config?.webhook_url &&
-    typeof config.webhook_url === "string" &&
-    config.webhook_url.trim()
-  ) {
-    return config.webhook_url.trim();
+  const stored = typeof config?.webhook_url === "string" ? config.webhook_url.trim() : "";
+  if (stored) {
+    // Defense in depth: even a value already saved in the DB must still be a real
+    // Microsoft webhook host, so a bad row can never be used to reach an internal URL.
+    return isMicrosoftWebhookUrl(stored) ? stored : null;
   }
-  const envUrl = process.env.TEAMS_WEBHOOK_URL;
-  if (envUrl && envUrl.trim()) return envUrl.trim();
+  const envUrl = process.env.TEAMS_WEBHOOK_URL?.trim();
+  if (envUrl) return isMicrosoftWebhookUrl(envUrl) ? envUrl : null;
   return null;
 }
 
@@ -223,12 +223,11 @@ export async function getJiraCredentials(): Promise<JiraCredentials> {
     throw new Error("Jira is not configured. Add base URL, email, and API token in Settings or set JIRA_BASE_URL, JIRA_EMAIL, and JIRA_API_TOKEN.");
   }
 
-  const url = new URL(baseUrl);
-  if (url.protocol !== "https:") {
-    throw new Error("Jira base URL must use HTTPS.");
+  if (!isSafeExternalUrl(baseUrl)) {
+    throw new Error("Jira base URL must be an https address on the public internet, not a local or internal address.");
   }
 
-  return { baseUrl: url.origin, email: email.trim(), apiToken: apiToken.trim() };
+  return { baseUrl: new URL(baseUrl).origin, email: email.trim(), apiToken: apiToken.trim() };
 }
 
 /** The oldest active clone. Used when a request doesn't name a clone. */
