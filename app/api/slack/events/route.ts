@@ -3,20 +3,23 @@ import { createServerSupabaseClient } from "@/lib/core/supabase/server";
 import { getActiveCloneId, getSlackBotToken } from "@/lib/integrations/credentials";
 import { generateEmbedding } from "@/lib/agents/openai";
 import { extractFacts, learnFromConversation } from "@backend/memory";
+import { answerAsClone } from "@/lib/agents/answer";
+import { postSlackMessage } from "@/lib/integrations/slack";
 
 /**
  * POST /api/slack/events
  *
  * Slack Events API webhook endpoint.
- * Receives real-time events from Slack (e.g. new messages) and ingests them
- * into the clone's memory with embeddings for continual learning.
+ * Receives real-time events from Slack:
+ *  1. Ambiently ingests conversations into vector memory with fact extraction.
+ *  2. Responds in real time to @mentions, DMs, or "twin: <question>" inquiries.
  *
  * Setup:
- *  1. Connect Slack via the Settings page (stores bot_token in integration_credentials)
+ *  1. Connect Slack via the Settings page (or SLACK_BOT_TOKEN in env)
  *  2. In your Slack App dashboard → Event Subscriptions → set Request URL to:
  *       https://<your-domain>/api/slack/events
- *  3. Subscribe to bot events: message.channels, message.groups
- *  4. Slack will send a url_verification challenge first, then real events.
+ *  3. Subscribe to bot events: app_mention, message.channels, message.im
+ *  4. Slack sends a url_verification challenge first, then real-time events.
  */
 
 // Slack event payload types
@@ -36,6 +39,7 @@ interface SlackMessageEvent {
   channel?: string;
   channel_type?: string;
   ts?: string;
+  thread_ts?: string;
   bot_id?: string;
 }
 
@@ -226,6 +230,57 @@ async function processSlackMessage(event: SlackMessageEvent): Promise<void> {
     console.error("[slack-events] Fact extraction failed:", err);
   }
 
+  // Real-time Q&A: if the user mentions the twin or asks a direct question, answer it in Slack
+  const isDirectQuestion =
+    event.type === "app_mention" ||
+    event.channel_type === "im" ||
+    /^(?:@?\w+\s+)?(?:twin|twinops):\s*/i.test(text) ||
+    text.includes("<@");
+
+  if (isDirectQuestion) {
+    const cleanedQuestion = text
+      .replace(/<@[A-Z0-9]+>/g, "")
+      .replace(/^(?:twin|twinops):\s*/i, "")
+      .trim();
+
+    if (cleanedQuestion.length >= 2) {
+      try {
+        const answerResult = await answerAsClone({
+          cloneId,
+          question: cleanedQuestion,
+          askedBy: senderName,
+        });
+
+        let reply = answerResult.answer;
+        const cited = answerResult.sources.filter((s) => answerResult.answer.includes(`[${s.index}]`));
+        const sources = cited.length > 0 ? cited : answerResult.sources.slice(0, 3);
+        if (sources.length > 0) {
+          reply +=
+            "\n\n*Verified Sources:*\n" +
+            sources
+              .map((s) => `• [${s.index}] ${s.title}${s.url ? ` (<${s.url}|link>)` : ""}`)
+              .join("\n");
+        }
+        if (answerResult.consultations.length > 0) {
+          reply +=
+            "\n\n_Checked with " +
+            answerResult.consultations.map((c) => `${c.target_clone_name}'s twin`).join(", ") +
+            "_";
+        }
+
+        await postSlackMessage({
+          token: botToken,
+          channel: channelId,
+          text: reply,
+          thread_ts: event.thread_ts || event.ts,
+        });
+        console.log(`[slack-events] Replied to ${senderName} in #${channelName}: "${cleanedQuestion.slice(0, 40)}"`);
+      } catch (err) {
+        console.error("[slack-events] Failed to generate/post twin answer:", err);
+      }
+    }
+  }
+
   console.log(
     `[slack-events] Ingested: [#${channelName}] ${senderName}: ${text.slice(0, 80)}${text.length > 80 ? "..." : ""}`
   );
@@ -250,8 +305,12 @@ export async function POST(request: NextRequest) {
   if (body.type === "event_callback" && body.event) {
     const event = body.event;
 
-    // Only process actual user messages (not bot messages, not subtypes like edits/joins)
-    if (event.type !== "message" || event.subtype || event.bot_id) {
+    // Process user messages and app_mentions (ignore bot messages or join/leave subtypes)
+    const isProcessable =
+      (event.type === "message" && !event.subtype && !event.bot_id) ||
+      event.type === "app_mention";
+
+    if (!isProcessable) {
       return NextResponse.json({ ok: true });
     }
 
@@ -261,8 +320,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true }); // already processed
     }
 
-    // Respond immediately (Slack requires response within 3 seconds)
-    // Process the message in the background
+    // Respond immediately within 3s SLA, execute Q&A and embedding in background
     processSlackMessage(event).catch((err) =>
       console.error("[slack-events] Background processing failed:", err)
     );

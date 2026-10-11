@@ -36,6 +36,111 @@ type MemoryRow = {
   embedding?: string;
 };
 
+/** Format a Jira issue into a standardized plain text document and metadata. */
+export function formatJiraIssue(
+  key: string,
+  fields: Record<string, unknown>,
+  baseUrl = "https://atlassian.net"
+): { content: string; metadata: Record<string, unknown>; updated: string; summary: string } {
+  const name = (v: unknown, prop = "name") => String(((v ?? {}) as Record<string, unknown>)[prop] ?? "");
+  const updated = String(fields.updated ?? new Date().toISOString());
+  const summary = String(fields.summary ?? "Untitled issue");
+  const description = adfToText(fields.description).trim();
+  const commentList =
+    ((fields.comment as { comments?: Array<Record<string, unknown>> } | undefined)?.comments ?? [])
+      .slice(-MAX_COMMENTS_PER_ISSUE)
+      .map((c) => `- ${name(c.author, "displayName") || "Someone"} (${String(c.created ?? "").slice(0, 10)}): ${adfToText(c.body).trim()}`);
+  const labels = Array.isArray(fields.labels) ? (fields.labels as string[]).join(", ") : "";
+  const url = `${baseUrl.replace(/\/$/, "")}/browse/${key}`;
+
+  const content = [
+    `Jira issue ${key}: ${summary}`,
+    `Project: ${name(fields.project, "key")} | Type: ${name(fields.issuetype)} | Status: ${name(fields.status) || "Unknown"} | Priority: ${name(fields.priority) || "Unspecified"}`,
+    `Assignee: ${name(fields.assignee, "displayName") || "Unassigned"} | Reporter: ${name(fields.reporter, "displayName") || "Unknown"}`,
+    labels ? `Labels: ${labels}` : "",
+    `Last updated: ${updated}`,
+    `URL: ${url}`,
+    description ? `\nDescription:\n${description}` : "",
+    commentList.length ? `\nRecent comments:\n${commentList.join("\n")}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const metadata = {
+    source: "jira",
+    title: `${key}: ${summary}`,
+    document_title: `${key}: ${summary}`,
+    issue_key: key,
+    project: name(fields.project, "key"),
+    status: name(fields.status) || "Unknown",
+    url,
+    updated,
+  };
+
+  return { content, metadata, updated, summary };
+}
+
+/** Ingest a single real-time Jira issue directly into Supabase vector memory. */
+export async function ingestSingleJiraIssue(opts: {
+  cloneId: string;
+  key: string;
+  fields: Record<string, unknown>;
+  baseUrl?: string;
+}): Promise<{ chunksCreated: number }> {
+  const { content, metadata, updated, summary } = formatJiraIssue(opts.key, opts.fields, opts.baseUrl);
+  const rows: MemoryRow[] = [];
+
+  rows.push({
+    clone_id: opts.cloneId,
+    type: "document",
+    source: "jira",
+    content,
+    confidence: 0.95,
+    metadata,
+    occurred_at: updated,
+  });
+
+  const chunks = chunkText(content, { chunkSize: 700, overlap: 100 });
+  for (const chunk of chunks) {
+    rows.push({
+      clone_id: opts.cloneId,
+      type: "chunk",
+      source: "jira",
+      content: chunk.metadata.chunk_index === 0 ? chunk.content : `${opts.key}: ${summary}\n${chunk.content}`,
+      confidence: 0.9,
+      metadata: { ...chunk.metadata, ...metadata },
+      occurred_at: updated,
+    });
+  }
+
+  const chunkRows = rows.filter((r) => r.type === "chunk");
+  if (chunkRows.length > 0) {
+    try {
+      const embeddings = await generateEmbeddings(chunkRows.map((r) => r.content));
+      chunkRows.forEach((row, i) => {
+        row.embedding = JSON.stringify(embeddings[i]);
+      });
+    } catch (err) {
+      console.warn("[jira-webhook] Embedding generation fallback (saving without vector):", err);
+    }
+  }
+
+  const supabase = createServerSupabaseClient();
+  await supabase
+    .from("memories")
+    .delete()
+    .eq("clone_id", opts.cloneId)
+    .eq("source", "jira")
+    .eq("metadata->>issue_key", opts.key);
+
+  const { error } = await supabase.from("memories").insert(rows);
+  if (error) {
+    throw new Error(`Failed to ingest Jira issue ${opts.key}: ${error.message}`);
+  }
+
+  return { chunksCreated: chunkRows.length };
+}
+
 /** Fetch a bounded Jira search result and store it as searchable clone memory. */
 export async function syncJiraContext(opts: {
   cloneId: string;
@@ -60,47 +165,13 @@ export async function syncJiraContext(opts: {
 
   const payload = (await response.json()) as { issues?: Array<Record<string, unknown>> };
   const issues = payload.issues ?? [];
-  const now = new Date().toISOString();
   const rows: MemoryRow[] = [];
   const issueKeys: string[] = [];
 
   for (const issue of issues) {
     const fields = (issue.fields ?? {}) as Record<string, unknown>;
-    const name = (v: unknown, key = "name") => String(((v ?? {}) as Record<string, unknown>)[key] ?? "");
     const key = String(issue.key ?? "JIRA-UNKNOWN");
-    const url = `${credentials.baseUrl}/browse/${key}`;
-    const updated = String(fields.updated ?? now);
-    const summary = String(fields.summary ?? "Untitled issue");
-    const description = adfToText(fields.description).trim();
-    const commentList =
-      ((fields.comment as { comments?: Array<Record<string, unknown>> } | undefined)?.comments ?? [])
-        .slice(-MAX_COMMENTS_PER_ISSUE)
-        .map((c) => `- ${name(c.author, "displayName") || "Someone"} (${String(c.created ?? "").slice(0, 10)}): ${adfToText(c.body).trim()}`);
-    const labels = Array.isArray(fields.labels) ? (fields.labels as string[]).join(", ") : "";
-
-    const content = [
-      `Jira issue ${key}: ${summary}`,
-      `Project: ${name(fields.project, "key")} | Type: ${name(fields.issuetype)} | Status: ${name(fields.status) || "Unknown"} | Priority: ${name(fields.priority) || "Unspecified"}`,
-      `Assignee: ${name(fields.assignee, "displayName") || "Unassigned"} | Reporter: ${name(fields.reporter, "displayName") || "Unknown"}`,
-      labels ? `Labels: ${labels}` : "",
-      `Last updated: ${updated}`,
-      `URL: ${url}`,
-      description ? `\nDescription:\n${description}` : "",
-      commentList.length ? `\nRecent comments:\n${commentList.join("\n")}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n");
-
-    const metadata = {
-      source: "jira",
-      title: `${key}: ${summary}`,
-      document_title: `${key}: ${summary}`,
-      issue_key: key,
-      project: name(fields.project, "key"),
-      status: name(fields.status) || "Unknown",
-      url,
-      updated,
-    };
+    const { content, metadata, updated, summary } = formatJiraIssue(key, fields, credentials.baseUrl);
 
     issueKeys.push(key);
     rows.push({ clone_id: opts.cloneId, type: "document", source: "jira", content, confidence: 0.95, metadata, occurred_at: updated });
@@ -109,7 +180,6 @@ export async function syncJiraContext(opts: {
         clone_id: opts.cloneId,
         type: "chunk",
         source: "jira",
-        // Prefix each chunk so later chunks still say which ticket they belong to.
         content: chunk.metadata.chunk_index === 0 ? chunk.content : `${key}: ${summary}\n${chunk.content}`,
         confidence: 0.9,
         metadata: { ...chunk.metadata, ...metadata },

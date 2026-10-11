@@ -78,3 +78,44 @@ test("Jira Integration - ADF description flattens to plain text", async () => {
   assert.equal(adfToText(null), "");
   assert.equal(adfToText("plain"), "plain");
 });
+
+test("Jira Integration - formatJiraIssue formats real-time webhook payload correctly", async () => {
+  const { formatJiraIssue } = await import("../lib/integrations/jira.ts");
+  const fields = {
+    summary: "Refactor Authentication Middleware",
+    status: { name: "In Progress" },
+    issuetype: { name: "Task" },
+    priority: { name: "Highest" },
+    project: { key: "AUTH", name: "Authentication Pod" },
+    assignee: { displayName: "Lead Architect" },
+    description: "Ensure session tokens are validated against Supabase RLS boundaries.",
+    comment: {
+      comments: [
+        { author: { displayName: "Security Officer" }, created: "2026-10-11", body: "Approved pending regression test." }
+      ]
+    }
+  };
+
+  const formatted = formatJiraIssue("AUTH-101", fields, "https://acme.atlassian.net");
+  assert.match(formatted.content, /Jira issue AUTH-101: Refactor Authentication Middleware/);
+  assert.match(formatted.content, /Status: In Progress/);
+  assert.match(formatted.content, /Assignee: Lead Architect/);
+  assert.match(formatted.content, /Security Officer/);
+  assert.match(formatted.content, /https:\/\/acme\.atlassian\.net\/browse\/AUTH-101/);
+  assert.equal(formatted.metadata.issue_key, "AUTH-101");
+  assert.equal(formatted.metadata.status, "In Progress");
+  assert.equal(formatted.metadata.source, "jira");
+});
+
+test("Slack Integration - postSlackMessage network failure handling", async () => {
+  const { postSlackMessage } = await import("../lib/integrations/slack.ts");
+  // Test invalid token call returns clean error rather than throwing
+  const res = await postSlackMessage({
+    token: "xoxb-invalid-token",
+    channel: "C12345",
+    text: "Test message"
+  });
+  assert.equal(res.ok, false);
+  assert.ok(res.error, "Should report Slack error reason");
+});
+
