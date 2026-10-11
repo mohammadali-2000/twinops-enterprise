@@ -1,0 +1,43 @@
+{
+  "_metadata": {
+    "major_version": 1,
+    "minor_version": 1
+  },
+  "display_information": {
+    "name": "TwinOps Enterprise",
+    "description": "Autonomous Enterprise Digital Twins for Delivery Pods",
+    "background_color": "#0f172a"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "TwinOps",
+      "always_online": true
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "app_mentions:read",
+        "channels:history",
+        "channels:read",
+        "chat:write",
+        "im:history",
+        "im:write",
+        "users:read"
+      ]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "request_url": "https://twinops-enterprise.onrender.com/api/slack/events",
+      "bot_events": [
+        "app_mention",
+        "message.channels",
+        "message.im"
+      ]
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}
