@@ -1,0 +1,44 @@
+services:
+  - type: web
+    name: twinops-enterprise
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: USE_SUPABASE_MEMORY
+        value: "true"
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        value: https://eooxipxavjywtmwxmjqp.supabase.co
+      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENAI_BASE_URL
+        value: https://openrouter.ai/api/v1
+      - key: OPENAI_MODEL
+        value: openai/gpt-4o-mini
+      - key: OPENAI_EMBEDDING_MODEL
+        value: text-embedding-3-small
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_USERNAME
+        value: mohammadali-2000
+      - key: JIRA_BASE_URL
+        sync: false
+      - key: JIRA_EMAIL
+        sync: false
+      - key: JIRA_API_TOKEN
+        sync: false
+      - key: TEAMS_WEBHOOK_URL
+        sync: false
+      - key: TEAMS_FLOW_SECRET
+        sync: false
