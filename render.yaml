@@ -42,3 +42,7 @@ services:
         sync: false
       - key: TEAMS_FLOW_SECRET
         sync: false
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: SLACK_SIGNING_SECRET
+        sync: false
