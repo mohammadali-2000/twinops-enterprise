@@ -360,3 +360,36 @@ export async function syncSlackContextToSupabase(opts: {
     chunks_created: chunksCreated,
   };
 }
+
+/**
+ * Post an answer or notification back to a Slack channel or thread.
+ */
+export async function postSlackMessage(opts: {
+  token: string;
+  channel: string;
+  text: string;
+  thread_ts?: string;
+}): Promise<{ ok: boolean; ts?: string; error?: string }> {
+  try {
+    const response = await fetch("https://slack.com/api/chat.postMessage", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${opts.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        channel: opts.channel,
+        text: opts.text,
+        thread_ts: opts.thread_ts,
+      }),
+    });
+    const data = (await response.json()) as { ok?: boolean; ts?: string; error?: string };
+    if (!data.ok) {
+      return { ok: false, error: data.error || "Unknown Slack error" };
+    }
+    return { ok: true, ts: data.ts };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Network error posting to Slack" };
+  }
+}
+
