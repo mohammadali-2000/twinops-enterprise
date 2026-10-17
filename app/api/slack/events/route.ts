@@ -3,6 +3,7 @@ import { createServerSupabaseClient } from "@/lib/core/supabase/server";
 import { getActiveCloneId, getSlackBotToken } from "@/lib/integrations/credentials";
 import { generateEmbedding } from "@/lib/agents/openai";
 import { extractFacts, learnFromConversation } from "@backend/memory";
+import { answerAsClone, CloneNotFoundError } from "@/lib/agents/answer";
 
 /**
  * POST /api/slack/events
@@ -10,12 +11,15 @@ import { extractFacts, learnFromConversation } from "@backend/memory";
  * Slack Events API webhook endpoint.
  * Receives real-time events from Slack (e.g. new messages) and ingests them
  * into the clone's memory with embeddings for continual learning.
+ * When someone @-mentions the bot, it answers using the same grounded
+ * answerAsClone() path used by the web app and Microsoft Teams, then posts
+ * the reply back into the same Slack channel.
  *
  * Setup:
  *  1. Connect Slack via the Settings page (stores bot_token in integration_credentials)
  *  2. In your Slack App dashboard → Event Subscriptions → set Request URL to:
  *       https://<your-domain>/api/slack/events
- *  3. Subscribe to bot events: message.channels, message.groups
+ *  3. Subscribe to bot events: message.channels, message.groups, app_mention
  *  4. Slack will send a url_verification challenge first, then real events.
  */
 
@@ -231,6 +235,59 @@ async function processSlackMessage(event: SlackMessageEvent): Promise<void> {
   );
 }
 
+/**
+ * Post a plain-text reply into a Slack channel using the bot token.
+ * Mirrors the same chat.postMessage call used by /api/slack/send.
+ */
+async function postSlackReply(token: string, channel: string, text: string, threadTs?: string): Promise<void> {
+  await fetch("https://slack.com/api/chat.postMessage", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ channel, text, thread_ts: threadTs }),
+  });
+}
+
+/**
+ * Handle an @-mention: strip the "<@BOTID>" prefix, run the same grounded
+ * answerAsClone() pipeline used by the web app and Teams, and reply in-thread.
+ */
+async function handleAppMention(event: SlackMessageEvent): Promise<void> {
+  const rawText = event.text?.trim() || "";
+  const question = rawText.replace(/^<@[^>]+>\s*/, "").trim();
+  if (question.length < 2) return;
+
+  const channelId = event.channel || "";
+  const userId = event.user || "unknown";
+
+  let botToken: string;
+  try {
+    botToken = await getSlackBotToken();
+  } catch {
+    console.error("[slack-events] No Slack bot token found. Connect Slack via Settings page.");
+    return;
+  }
+
+  const senderName = await resolveUserName(botToken, userId);
+
+  try {
+    const cloneId = await getActiveCloneId();
+    const result = await answerAsClone({ cloneId, question, askedBy: senderName });
+
+    const cited = result.sources.filter((s) => result.answer.includes(`[${s.index}]`));
+    const sourceLines = cited.map((s) => (s.url ? `[${s.index}] <${s.url}|${s.title}>` : `[${s.index}] ${s.title}`));
+    const consultLines = result.consultations.map((c) => `Checked with ${c.target_clone_name}'s twin`);
+    const footer = [...consultLines, ...sourceLines];
+    const reply = footer.length ? `${result.answer}\n\n*Sources:*\n${footer.join("\n")}` : result.answer;
+
+    await postSlackReply(botToken, channelId, reply, event.ts);
+  } catch (err) {
+    const message = err instanceof CloneNotFoundError
+      ? "No twin is set up yet. Create one in Settings first."
+      : err instanceof Error ? err.message : "Something went wrong answering that.";
+    await postSlackReply(botToken, channelId, `Sorry, I couldn't answer that: ${message}`, event.ts);
+  }
+}
+
 // ---- Route handler ----
 
 export async function POST(request: NextRequest) {
@@ -250,15 +307,24 @@ export async function POST(request: NextRequest) {
   if (body.type === "event_callback" && body.event) {
     const event = body.event;
 
-    // Only process actual user messages (not bot messages, not subtypes like edits/joins)
-    if (event.type !== "message" || event.subtype || event.bot_id) {
-      return NextResponse.json({ ok: true });
-    }
-
     // Deduplicate (Slack retries if we don't respond fast enough)
     const eventId = body.event_id || `${event.channel}_${event.ts}`;
     if (!trackEvent(eventId)) {
       return NextResponse.json({ ok: true }); // already processed
+    }
+
+    // @-mention: answer the question and reply in the channel, same grounded
+    // path as the web app and Teams. Respond to Slack immediately, answer in background.
+    if (event.type === "app_mention" && !event.bot_id) {
+      handleAppMention(event).catch((err) =>
+        console.error("[slack-events] app_mention handling failed:", err)
+      );
+      return NextResponse.json({ ok: true });
+    }
+
+    // Only passively learn from actual user messages (not bot messages, not subtypes like edits/joins)
+    if (event.type !== "message" || event.subtype || event.bot_id) {
+      return NextResponse.json({ ok: true });
     }
 
     // Respond immediately (Slack requires response within 3 seconds)
