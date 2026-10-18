@@ -22,6 +22,8 @@ COPY . .
 # when it reads env vars. Real secrets are injected later, at container
 # run time, never baked into the image itself.
 ENV NEXT_TELEMETRY_DISABLED=1
+# Only this build opts into standalone output; Render's "next start" path does not.
+ENV BUILD_STANDALONE=1
 RUN npm run build
 
 # Stage 3: the actual production image that runs.
