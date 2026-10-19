@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ingestSingleJiraIssue } from "@/lib/integrations/jira";
+import { ingestSingleJiraIssue, fetchJiraIssueFields } from "@/lib/integrations/jira";
 import { getActiveCloneId, getJiraCredentials } from "@/lib/integrations/credentials";
 import { createServerSupabaseClient } from "@/lib/core/supabase/server";
 
@@ -47,15 +47,23 @@ export async function POST(request: NextRequest) {
   }
 
   const issueKey = issue.key;
-  const fields = issue.fields ?? {};
 
-  // Resolve Jira Cloud base URL
-  let baseUrl = "https://atlassian.net";
-  try {
-    const creds = await getJiraCredentials();
-    baseUrl = creds.baseUrl;
-  } catch {
-    // If credentials aren't loaded yet, default to Jira standard browse path
+  // Webhook payloads (especially comment events) often omit the description and
+  // comment list. Fetch the full issue from the Jira API so the stored memory
+  // stays complete instead of being overwritten with a sparse version. Fall
+  // back to the webhook's own fields only if the fetch fails.
+  const fetched = await fetchJiraIssueFields(issueKey);
+  const fields = fetched?.fields ?? issue.fields ?? {};
+
+  // Resolve Jira Cloud base URL (used to build browse links in stored memory).
+  let baseUrl = fetched?.baseUrl ?? "";
+  if (!baseUrl) {
+    try {
+      const creds = await getJiraCredentials();
+      baseUrl = creds.baseUrl;
+    } catch {
+      baseUrl = "https://your-domain.atlassian.net";
+    }
   }
 
   // 2. Handle issue deletion

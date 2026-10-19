@@ -4,9 +4,19 @@ import { getSlackBotToken } from "@/lib/integrations/credentials";
 export async function POST(request: NextRequest) {
   try {
     const { channel, text } = await request.json();
-    const token = await getSlackBotToken();
 
-    const targetChannel = channel || "C0C1GSEC4J0"; // #new-channel
+    if (!channel || typeof channel !== "string") {
+      return NextResponse.json(
+        { error: "channel is required (a Slack channel ID)" },
+        { status: 400 }
+      );
+    }
+    if (!text || typeof text !== "string") {
+      return NextResponse.json({ error: "text is required" }, { status: 400 });
+    }
+
+    const token = await getSlackBotToken();
+    const targetChannel = channel;
 
     const res = await fetch("https://slack.com/api/chat.postMessage", {
       method: "POST",

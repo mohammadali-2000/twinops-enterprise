@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/core/supabase/server";
 import { getActiveCloneId, getSlackBotToken } from "@/lib/integrations/credentials";
 import { generateEmbedding } from "@/lib/agents/openai";
-import { extractFacts, learnFromConversation } from "@backend/memory";
+import { learnFromConversation } from "@backend/memory";
 import { answerAsClone } from "@/lib/agents/answer";
 import { postSlackMessage } from "@/lib/integrations/slack";
 
@@ -139,15 +139,20 @@ async function processSlackMessage(event: SlackMessageEvent): Promise<void> {
   const memoryContent = `[Slack #${channelName}] ${senderName}: ${text}`;
   const supabase = createServerSupabaseClient();
 
-  // Match sender to a clone by name (per-person learning)
+  // Match sender to a clone by name (per-person learning).
+  // Strip characters that have meaning in a PostgREST .or() filter string
+  // (comma, parenthesis, asterisk, etc.) so a name like "Smith, John" can't
+  // break the filter or inject extra conditions.
   let cloneId: string;
-  const senderLower = senderName.toLowerCase();
-  const { data: matchedClone } = await supabase
-    .from("clones")
-    .select("id, name, owner_name")
-    .or(`name.ilike.%${senderLower}%,owner_name.ilike.%${senderLower}%`)
-    .limit(1)
-    .maybeSingle();
+  const senderLower = senderName.toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, " ").trim();
+  const { data: matchedClone } = senderLower
+    ? await supabase
+        .from("clones")
+        .select("id, name, owner_name")
+        .or(`name.ilike.%${senderLower}%,owner_name.ilike.%${senderLower}%`)
+        .limit(1)
+        .maybeSingle()
+    : { data: null };
 
   if (matchedClone) {
     cloneId = matchedClone.id as string;
@@ -155,6 +160,23 @@ async function processSlackMessage(event: SlackMessageEvent): Promise<void> {
   } else {
     cloneId = await getActiveCloneId();
     console.log(`[slack-events] No clone match for "${senderName}", using default clone ${cloneId}`);
+  }
+
+  // Skip if we already stored this exact Slack message (by its unique ts).
+  // The in-memory dedup Set does not survive cold starts on a serverless host,
+  // so this DB check is what actually prevents duplicate rows on Slack retries.
+  if (event.ts) {
+    const { data: existing } = await supabase
+      .from("memories")
+      .select("id")
+      .eq("source", "slack")
+      .eq("metadata->>slack_ts", event.ts)
+      .limit(1)
+      .maybeSingle();
+    if (existing) {
+      console.log(`[slack-events] Skipping already-stored message ts=${event.ts}`);
+      return;
+    }
   }
 
   // Generate embedding for the message

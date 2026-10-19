@@ -5,16 +5,25 @@ const DEBRIEF_PROMPT =
   "Give me a debrief on our recent workspace activities, key decisions, and action items requiring attention. Be concise, actionable, and conversational, providing an executive briefing.";
 
 export async function POST(request: NextRequest) {
-  const {
-    message,
-    cloneId,
-    conversationHistory = [],
-    isProactiveDebrief = false,
-  } = await request.json();
+  let body: {
+    message?: string;
+    cloneId?: string;
+    conversationHistory?: { role: string; content: string }[];
+    isProactiveDebrief?: boolean;
+  };
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const { message, cloneId, conversationHistory = [], isProactiveDebrief = false } = body;
 
   if (!cloneId || (!message && !isProactiveDebrief)) {
     return NextResponse.json({ error: "cloneId and message are required" }, { status: 400 });
   }
+
+  const question = isProactiveDebrief ? DEBRIEF_PROMPT : (message as string);
 
   const encoder = new TextEncoder();
   const send = (controller: ReadableStreamDefaultController, data: unknown) =>
@@ -25,7 +34,7 @@ export async function POST(request: NextRequest) {
       try {
         const result = await answerAsClone({
           cloneId,
-          question: isProactiveDebrief ? DEBRIEF_PROMPT : message,
+          question,
           history: conversationHistory,
           onEvent: (event) => send(controller, event),
         });

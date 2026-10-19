@@ -80,6 +80,38 @@ export function formatJiraIssue(
   return { content, metadata, updated, summary };
 }
 
+/**
+ * Fetch one issue's full fields (description + comments) from the Jira API.
+ * Webhook payloads for comment events omit the description and comment list,
+ * so re-ingesting from them alone would overwrite the rich synced document
+ * with a sparse one. Fetching fresh keeps the stored memory complete.
+ * Returns null if credentials are missing or the API call fails.
+ */
+export async function fetchJiraIssueFields(
+  key: string
+): Promise<{ fields: Record<string, unknown>; baseUrl: string } | null> {
+  let credentials;
+  try {
+    credentials = await getJiraCredentials();
+  } catch {
+    return null;
+  }
+  const authorization = Buffer.from(`${credentials.email}:${credentials.apiToken}`).toString("base64");
+  const fieldList = "summary,status,assignee,reporter,priority,updated,description,issuetype,project,comment,labels";
+  try {
+    const response = await fetch(
+      `${credentials.baseUrl}/rest/api/3/issue/${encodeURIComponent(key)}?fields=${fieldList}`,
+      { headers: { Authorization: `Basic ${authorization}`, Accept: "application/json" }, cache: "no-store" }
+    );
+    if (!response.ok) return null;
+    const payload = (await response.json()) as { fields?: Record<string, unknown> };
+    if (!payload.fields) return null;
+    return { fields: payload.fields, baseUrl: credentials.baseUrl };
+  } catch {
+    return null;
+  }
+}
+
 /** Ingest a single real-time Jira issue directly into Supabase vector memory. */
 export async function ingestSingleJiraIssue(opts: {
   cloneId: string;
@@ -126,10 +158,12 @@ export async function ingestSingleJiraIssue(opts: {
   }
 
   const supabase = createServerSupabaseClient();
+  // Delete this issue's memories across ALL clones, not just the target clone.
+  // An issue belongs to exactly one clone at a time, so when its assignee
+  // changes we must remove the previous clone's copy too, otherwise it orphans.
   await supabase
     .from("memories")
     .delete()
-    .eq("clone_id", opts.cloneId)
     .eq("source", "jira")
     .eq("metadata->>issue_key", opts.key);
 
