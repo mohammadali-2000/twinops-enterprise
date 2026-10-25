@@ -2,6 +2,11 @@
 
 Autonomous workplace digital twins and multi-agent coordination platform for enterprise engineering delivery pods.
 
+**Live app:** https://twinops-enterprise.onrender.com
+(Hosted on Render's free tier, which sleeps after ~15 minutes of inactivity, so the first request may take 30-50 seconds to wake up.)
+
+**Health check:** https://twinops-enterprise.onrender.com/api/health
+
 ## 1. Project Overview
 
 TwinOps is an enterprise orchestration platform that builds specialized digital twin agents for engineering leads, architects, and product managers. These digital twins represent team leads when they are unavailable, answering technical and procedural queries across enterprise communication channels such as Microsoft Teams and Slack.
