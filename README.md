@@ -82,10 +82,11 @@ graph TD
 - **Framework**: Next.js 16.1.6 (App Router, Server Actions, Route Handlers)
 - **Runtime & Language**: Node.js 20+ LTS, TypeScript 5 (Strict Mode)
 - **UI & Styling**: React 19, Tailwind CSS 4, Lucide React icons
-- **Database & Vectors**: PostgreSQL with `pgvector` (Supabase Cloud or self-hosted)
-- **AI & Reasoning**: OpenAI GPT-4o / Azure OpenAI Service via OpenAI SDK
+- **Database & Vectors**: PostgreSQL with `pgvector` (Supabase Cloud)
+- **AI & Reasoning**: GPT-4o via OpenRouter (OpenAI-compatible gateway), or OpenAI / Azure OpenAI directly
 - **Testing**: Node.js native test runner executed via `tsx`
-- **Integrations**: Microsoft Teams Adaptive Cards v1.4, GitHub REST API, Atlassian Jira Cloud REST API
+- **Integrations**: Microsoft Teams Adaptive Cards v1.4, Slack Events API, GitHub REST API, Atlassian Jira Cloud REST API
+- **Hosting**: Render (free web service), live at https://twinops-enterprise.onrender.com
 
 ---
 
@@ -214,10 +215,10 @@ The platform features standardized enterprise connectors partitioned into implem
 
 | Integration | Status | Implementation Details |
 | :--- | :--- | :--- |
-| **Microsoft Teams** | Implemented | Dispatches Adaptive Cards v1.4 via Power Automate Webhooks; includes actionable buttons, citation links, and presence indicators. |
-| **GitHub** | Implemented | Client implemented in `lib/integrations/github.ts` for pulling pull request diffs, repository commits, and issue descriptions. |
-| **Jira** | Partial | Data interfaces defined in `backend/memory/synthetic/jira.ts`; active sync pipeline requires deployment of Jira Cloud webhook credentials. |
-| **Slack** | Partial | Event receiver and signature validation implemented in `app/api/slack/events/route.ts`; requires Slack App manifest installation. |
+| **Microsoft Teams** | Implemented | Inbound questions via Power Automate flow to `/api/teams/events` (shared-secret auth); outbound Adaptive Cards v1.4 with citation links. |
+| **GitHub** | Implemented | Client in `lib/integrations/github.ts` syncs repos, commits, and pull requests into vector memory with embeddings. |
+| **Jira** | Implemented | Live sync (`lib/integrations/jira.ts`) converts ADF to text, chunks and embeds issues; real-time updates via webhook at `/api/jira/webhook`. |
+| **Slack** | Implemented | Bidirectional: syncs channel history into memory and answers `@TwinOps` mentions, DMs, and `twin:` messages in real time via `/api/slack/events`. |
 | **Notion** | Partial | Document parser and sync schema implemented in `lib/integrations/notion.ts`; requires internal integration token. |
 | **Google Workspace** | Partial | OAuth routing configured in `app/api/auth/google/route.ts`; requires Google Cloud Console Client ID and Secret. |
 | **Microsoft Graph API**| Planned | Direct Graph API integration for corporate Outlook calendar presence synchronization and enterprise directory lookup. |
@@ -287,14 +288,23 @@ Pull requests must pass the following continuous integration checks:
 
 ## 11. Deployment
 
-TwinOps can be deployed as a serverless application on Vercel Enterprise or as a containerized workload on Kubernetes or AWS ECS.
+**Current live deployment: Render.** The app runs as a Render web service at
+https://twinops-enterprise.onrender.com, built from this repo on every push to `main`
+via the `render.yaml` blueprint. See `docs/RENDER-DEPLOYMENT-GUIDE.md` for the full setup.
 
-For containerized deployments, refer to the multi-stage Docker build specification in `docs/deployment.md`.
+Other supported targets:
+- **Containers (Docker)**: a multi-stage `Dockerfile` is included for AWS ECS / Kubernetes.
+  The standalone build is opt-in via `BUILD_STANDALONE=1` (set automatically in the Dockerfile).
+- **Vercel**: works as a standard Next.js app.
 
-Database initialization and migrations must be executed against the target PostgreSQL cluster prior to traffic cutover:
-```bash
-npx supabase db push --db-url "postgresql://[USER]:[PASSWORD]@[HOST]:[PORT]/[DATABASE]"
-```
+Before first traffic, run the schema migration (`supabase/migrations/`) against your
+PostgreSQL database via the Supabase SQL editor or CLI.
+
+### Beginner-friendly guides in `docs/`
+- `GETTING-STARTED.md` — step-by-step setup for someone with zero prior experience
+- `SETUP-GUIDE.md` — connecting GitHub, Jira, Slack, and Teams in plain language
+- `RENDER-DEPLOYMENT-GUIDE.md` — deploying the live app on Render
+- `REALTIME-INTEGRATIONS-GUIDE.md` — the real-time Slack and Jira webhook flows
 
 ---
 
