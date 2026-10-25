@@ -290,13 +290,17 @@ async function processSlackMessage(event: SlackMessageEvent): Promise<void> {
             "_";
         }
 
-        await postSlackMessage({
+        const posted = await postSlackMessage({
           token: botToken,
           channel: channelId,
           text: reply,
           thread_ts: event.thread_ts || event.ts,
         });
-        console.log(`[slack-events] Replied to ${senderName} in #${channelName}: "${cleanedQuestion.slice(0, 40)}"`);
+        if (posted.ok) {
+          console.log(`[slack-events] Replied to ${senderName} in #${channelName}: "${cleanedQuestion.slice(0, 40)}"`);
+        } else {
+          console.error(`[slack-events] FAILED to post reply to #${channelName}: ${posted.error}`);
+        }
       } catch (err) {
         console.error("[slack-events] Failed to generate/post twin answer:", err);
       }
